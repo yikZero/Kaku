@@ -24,10 +24,10 @@ APP_BUNDLE_OUT="$OUT_DIR/$APP_NAME.app"
 
 echo "[1/4] Building binaries ($PROFILE)..."
 if [[ "$PROFILE" == "release" ]]; then
-	cargo build --release -p wezterm-gui -p wezterm -p wezterm-mux-server -p strip-ansi-escapes
+	cargo build --release -p wezterm-gui -p wezterm
 	BIN_DIR="$TARGET_DIR/release"
 else
-	cargo build -p wezterm-gui -p wezterm -p wezterm-mux-server -p strip-ansi-escapes
+	cargo build -p wezterm-gui -p wezterm
 	BIN_DIR="$TARGET_DIR/debug"
 fi
 
@@ -45,7 +45,7 @@ cp -R assets/shell-completion "$APP_BUNDLE_OUT/Contents/Resources/"
 cp -R assets/fonts "$APP_BUNDLE_OUT/Contents/Resources/"
 tic -xe wezterm -o "$APP_BUNDLE_OUT/Contents/Resources/terminfo" termwiz/data/wezterm.terminfo
 
-for bin in wezterm wezterm-mux-server wezterm-gui strip-ansi-escapes; do
+for bin in wezterm wezterm-gui; do
 	cp "$BIN_DIR/$bin" "$APP_BUNDLE_OUT/Contents/MacOS/$bin"
 	chmod +x "$APP_BUNDLE_OUT/Contents/MacOS/$bin"
 done

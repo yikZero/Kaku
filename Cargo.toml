@@ -1,8 +1,6 @@
 [workspace]
 members = [
   "bidi",
-  "bidi/generate",
-  "strip-ansi-escapes",
   "deps/cairo",
   "wezterm",
   "crates/wezterm-blob-leases",
@@ -10,7 +8,6 @@ members = [
   "wezterm-escape-parser",
   "crates/wezterm-dynamic",
   "wezterm-gui",
-  "wezterm-mux-server",
   "crates/wezterm-open-url",
   "crates/wezterm-ssh",
   "crates/wezterm-surface",
