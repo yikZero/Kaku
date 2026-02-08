@@ -16,6 +16,8 @@
   <img src="assets/kaku.png" alt="Kaku Screenshot" width="800" />
   <br/>
   Kaku is a deeply customized fork of <a href="https://github.com/wez/wezterm">WezTerm</a>, designed for an <b>out-of-the-box</b> experience.
+  <br/>
+  <em>🚧 Work In Progress: Kaku is currently in active development. Features may change.</em>
 </p>
 
 ## Features
