@@ -74,18 +74,18 @@ I heavily rely on the CLI for both work and personal projects. Tools I've built,
 
 I used Alacritty for years, but its lack of multi-tab support became cumbersome for AI-assisted coding. Kitty has some aesthetic and positioning quirks I couldn't get past. Ghostty shows promise but font rendering needs work. Warp feels bloated and requires a login. iTerm2 is reliable but showing its age and harder to deeply customize.
 
-WezTerm is robust and hackable, and I am deeply grateful for its powerful engine. However, I wanted an environment that was ready immediately, without extensive configuration.
+WezTerm is robust and hackable, and I am deeply grateful for its powerful engine. However, I wanted an environment that was ready immediately, without extensive configuration—and something significantly faster and lighter.
 
-So I built Kaku. Fast, polished, and ready for work.
+I built Kaku to be that environment: fast, polished, and ready to work.
 
 ### Performance
 
-| Metric | Upstream | Kaku | Improvement |
+| Metric | Upstream | Kaku | Methodology |
 | :--- | :--- | :--- | :--- |
-| Binary Size | ~67 MB | **~40 MB** | 40% Smaller |
-| App Bundle | ~100 MB | **~80 MB** | 20% Smaller |
-| Startup | Standard | **Instant** | Lazy Loading |
-| Shell Init | Standard | **~100ms** | 50% Faster |
+| **Executable Size** | ~67 MB | ~40 MB | Aggressive symbol stripping & feature pruning |
+| **Resources Volume** | ~100 MB | ~80 MB | Asset optimization & lazy-loaded assets |
+| **Launch Latency** | Standard | Instant | Just-in-time initialization |
+| **Shell Bootstrap** | ~200ms | ~100ms | Optimized environment provisioning |
 
 Achieved through aggressive stripping of unused features, lazy loading of color schemes, and shell optimizations.
 
