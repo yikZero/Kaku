@@ -69,7 +69,7 @@ end
 
 local function tab_path_parts(pane)
   local cwd = pane.current_working_dir
-  if not cwd and pane.get_current_working_dir then
+  if not cwd then
     local ok, runtime_cwd = pcall(function()
       return pane:get_current_working_dir()
     end)
