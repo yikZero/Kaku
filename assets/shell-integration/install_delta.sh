@@ -51,7 +51,7 @@ else
     echo -n "  Installing delta binary... "
     cp "$VENDOR_DELTA" "$USER_BIN_DIR/delta"
     chmod +x "$USER_BIN_DIR/delta"
-    echo -e "${GREEN}✓${NC}"
+    echo -e "${GREEN}done ✅${NC}"
 fi
 
 # Configure git to use delta
@@ -63,24 +63,36 @@ git config --global delta.pager "less --mouse --wheel-lines=3 -R -F -X"
 git config --global delta.line-numbers true
 git config --global delta.side-by-side true
 git config --global delta.line-fill-method "spaces"
-echo -e "${GREEN}✓${NC}"
+echo -e "${GREEN}done ✅${NC}"
 
 # Set delta theme
 echo -n "  Applying Kaku-aligned style... "
-git config --global delta.syntax-theme "none"
-git config --global delta.file-style "bold blue"
-git config --global delta.file-decoration-style "blue box"
-git config --global delta.file-added-label "ADD"
-git config --global delta.file-copied-label "CPY"
-git config --global delta.file-modified-label "MOD"
-git config --global delta.file-removed-label "DEL"
-git config --global delta.file-renamed-label "REN"
+git config --global delta.syntax-theme "Coldark-Dark"
+git config --global delta.file-style "omit"
+git config --global delta.file-decoration-style "omit"
 git config --global delta.hunk-header-style "file line-number syntax"
-git config --global delta.line-numbers-left-style "cyan"
-git config --global delta.line-numbers-right-style "cyan"
-git config --global delta.line-numbers-minus-style "red"
-git config --global delta.line-numbers-plus-style "green"
-echo -e "${GREEN}✓${NC}"
+
+# Clear previously customized colors so the selected syntax theme controls rendering.
+for key in \
+  delta.hunk-header-file-style \
+  delta.hunk-header-line-number-style \
+  delta.hunk-header-decoration-style \
+  delta.line-numbers-left-style \
+  delta.line-numbers-right-style \
+  delta.line-numbers-minus-style \
+  delta.line-numbers-plus-style \
+  delta.file-added-label \
+  delta.file-copied-label \
+  delta.file-modified-label \
+  delta.file-removed-label \
+  delta.file-renamed-label \
+  delta.minus-style \
+  delta.minus-emph-style \
+  delta.plus-style \
+  delta.plus-emph-style; do
+  git config --global --unset-all "$key" 2>/dev/null || true
+done
+echo -e "${GREEN}done ✅${NC}"
 
 echo ""
 echo -e "${GREEN}${BOLD}✓ Delta installed successfully!${NC}"
