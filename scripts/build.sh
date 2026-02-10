@@ -102,17 +102,21 @@ STAGING_DIR="$OUT_DIR/dmg_staging"
 BACKGROUND_IMAGE_SOURCE="assets/macos/dmg/background.png"
 BACKGROUND_IMAGE_NAME="background.png"
 
+hdiutil_cmd() {
+	LC_ALL=C LANG=en_US.UTF-8 hdiutil "$@"
+}
+
 cleanup_volumes() {
 	local vol_pattern="/Volumes/$APP_NAME"
 	local max_attempts=15
 	local attempt=1
 
 	while [ $attempt -le $max_attempts ]; do
-		if hdiutil info | grep -q "$vol_pattern"; then
+		if hdiutil_cmd info | grep -q "$vol_pattern"; then
 			echo "Detaching existing volumes (Attempt $attempt/$max_attempts)..."
-			hdiutil info | grep "$vol_pattern" | awk '{print $1}' | while read -r dev; do
+			hdiutil_cmd info | grep "$vol_pattern" | awk '{print $1}' | while read -r dev; do
 				echo "Force detaching $dev..."
-				hdiutil detach "$dev" -force || true
+				hdiutil_cmd detach "$dev" -force || true
 			done
 			sleep 1
 		else
@@ -182,7 +186,7 @@ MAX_RETRIES=3
 RETRY_COUNT=0
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-	if ! hdiutil create -volname "$APP_NAME" \
+	if ! hdiutil_cmd create -quiet -volname "$APP_NAME" \
 		-srcfolder "$STAGING_DIR" \
 		-ov -format UDRW \
 		"$TEMP_DMG_PATH"; then
@@ -193,7 +197,7 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
 		continue
 	fi
 
-	ATTACH_OUTPUT=$(hdiutil attach -readwrite -noverify -noautoopen "$TEMP_DMG_PATH" 2>/dev/null || true)
+	ATTACH_OUTPUT=$(hdiutil_cmd attach -readwrite -noverify -noautoopen "$TEMP_DMG_PATH" 2>/dev/null || true)
 	DEVICE=$(echo "$ATTACH_OUTPUT" | awk '/\/dev\// {print $1; exit}')
 	MOUNT_POINT=$(echo "$ATTACH_OUTPUT" | awk -F'\t' '/\/Volumes\// {print $NF; exit}')
 	MOUNT_NAME=$(basename "$MOUNT_POINT")
@@ -201,7 +205,7 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
 	if [[ -z "$DEVICE" || -z "$MOUNT_POINT" ]]; then
 		echo "Failed to attach temporary DMG. Retrying..."
 		if [[ -n "${DEVICE:-}" ]]; then
-			hdiutil detach "$DEVICE" -force >/dev/null 2>&1 || true
+			hdiutil_cmd detach "$DEVICE" -force >/dev/null 2>&1 || true
 		fi
 		cleanup_volumes
 		sleep 2
@@ -214,9 +218,9 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
 	fi
 
 	sync
-	hdiutil detach "$DEVICE" -force >/dev/null 2>&1 || true
+	hdiutil_cmd detach "$DEVICE" -force >/dev/null 2>&1 || true
 
-	if hdiutil convert "$TEMP_DMG_PATH" \
+	if hdiutil_cmd convert -quiet "$TEMP_DMG_PATH" \
 		-format UDZO \
 		-imagekey zlib-level=9 \
 		-ov -o "$DMG_BASE_PATH"; then
