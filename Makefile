@@ -1,4 +1,4 @@
-.PHONY: all fmt build app check test
+.PHONY: all fmt fmt-check build app check test install-hooks install-tools
 
 all: build
 
@@ -20,4 +20,18 @@ build:
 	cargo build $(BUILD_OPTS) -p kaku -p kaku-gui -p wezterm-mux-server-impl
 
 fmt:
-	cargo +nightly fmt
+	cargo +nightly fmt -p kaku -p kaku-gui -p mux -p wezterm-term -p termwiz -p config -p wezterm-font
+
+fmt-check:
+	cargo +nightly fmt -p kaku -p kaku-gui -p mux -p wezterm-term -p termwiz -p config -p wezterm-font -- --check
+	@echo "Format check passed."
+
+install-hooks:
+	cp scripts/pre-commit .git/hooks/pre-commit
+	chmod +x .git/hooks/pre-commit
+	@echo "Pre-commit hook installed."
+
+install-tools:
+	cargo install cargo-nextest --locked
+	rustup toolchain install nightly --component rustfmt
+	@echo "Tools installed."
