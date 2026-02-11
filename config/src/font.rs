@@ -604,11 +604,27 @@ impl TextStyle {
             font.push(default_font);
         }
 
+        // Add macOS CJK fallbacks so existing user configs that only list
+        // one CJK family still have broad Han glyph coverage.
+        #[cfg(target_os = "macos")]
+        for family in ["PingFang SC", "PingFang TC", "PingFang HK", "Hiragino Sans GB"] {
+            let fallback = FontAttributes::new_fallback(family);
+            if !font.iter().any(|f| *f == fallback) {
+                font.push(fallback);
+            }
+        }
+
         // We bundle this emoji font as an in-memory fallback
-        font.push(FontAttributes::new_fallback("Noto Color Emoji"));
+        let emoji_fallback = FontAttributes::new_fallback("Noto Color Emoji");
+        if !font.iter().any(|f| *f == emoji_fallback) {
+            font.push(emoji_fallback);
+        }
 
         // Add symbols that many people end up using via patched fonts
-        font.push(FontAttributes::new_fallback("Symbols Nerd Font Mono"));
+        let symbol_fallback = FontAttributes::new_fallback("Symbols Nerd Font Mono");
+        if !font.iter().any(|f| *f == symbol_fallback) {
+            font.push(symbol_fallback);
+        }
 
         font
     }
