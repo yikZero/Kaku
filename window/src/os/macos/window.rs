@@ -49,7 +49,6 @@ use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use wezterm_font::FontConfiguration;
 use wezterm_input_types::{is_ascii_control, IntegratedTitleButtonStyle, KeyboardLedStatus};
@@ -434,23 +433,14 @@ const MIN_RESTORE_WIDTH: usize = 200;
 const MIN_RESTORE_HEIGHT: usize = 120;
 
 fn point_in_rect(pt: NSPoint, rect: NSRect) -> bool {
-    let rect: euclid::Rect<f64, ()> =
-        euclid::rect(rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
-    rect.contains(euclid::point2(pt.x, pt.y))
-}
-
-fn point_in_any_screen(pt: NSPoint) -> bool {
-    unsafe {
-        let screens = NSScreen::screens(nil);
-        for idx in 0..screens.count() {
-            let screen = screens.objectAtIndex(idx);
-            let frame = NSScreen::frame(screen);
-            if point_in_rect(pt, frame) {
-                return true;
-            }
-        }
-    }
-    false
+    // Allow a tiny tolerance so persisted coordinates that land on
+    // screen boundaries due to rounding/scaling are still considered valid.
+    const EDGE_TOLERANCE: f64 = 2.0;
+    let min_x = rect.origin.x - EDGE_TOLERANCE;
+    let min_y = rect.origin.y - EDGE_TOLERANCE;
+    let max_x = rect.origin.x + rect.size.width + EDGE_TOLERANCE;
+    let max_y = rect.origin.y + rect.size.height + EDGE_TOLERANCE;
+    pt.x >= min_x && pt.x <= max_x && pt.y >= min_y && pt.y <= max_y
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -514,9 +504,17 @@ fn parse_persisted_window_geometry(s: &str) -> Option<PersistedWindowGeometry> {
 
 fn load_persisted_window_geometry() -> Option<PersistedWindowGeometry> {
     let file_name = persisted_window_geometry_file();
+    log::info!("window geometry: loading from {:?}", file_name);
     if let Ok(contents) = std::fs::read_to_string(&file_name) {
         match parse_persisted_window_geometry(&contents) {
-            Some(geometry) => return Some(geometry),
+            Some(geometry) => {
+                log::info!(
+                    "Loaded persisted window geometry from {:?}: {:?}",
+                    file_name,
+                    geometry
+                );
+                return Some(geometry);
+            }
             None => log::warn!(
                 "Failed to parse persisted window geometry from {:?}: {:?}",
                 file_name,
@@ -539,45 +537,39 @@ fn load_persisted_window_geometry() -> Option<PersistedWindowGeometry> {
     })
 }
 
-/// Set when `applicationShouldTerminate` confirms quit, so that individual
-/// `window_will_close` callbacks know not to overwrite the geometry that
-/// `on_app_terminating` already persisted from the key window.
-pub(crate) static TERMINATING: AtomicBool = AtomicBool::new(false);
-
 /// Called from the app delegate when the user confirms quit.
-/// Persists the key (frontmost) window's geometry as a reliable safety net
-/// before the event loop is stopped.
+/// Persists geometry from tracked terminal windows before the event loop stops.
 pub(crate) fn on_app_terminating() {
-    let mut persisted = false;
-    let key_window: id = unsafe { msg_send![NSApplication::sharedApplication(nil), keyWindow] };
-    if !key_window.is_null() {
-        persist_window_geometry(key_window);
-        persisted = true;
-    }
-
-    if !persisted {
-        let main_window: id = unsafe { msg_send![NSApplication::sharedApplication(nil), mainWindow] };
-        if !main_window.is_null() {
-            persist_window_geometry(main_window);
-            persisted = true;
-        }
-    }
-
-    if !persisted {
-        if let Some(conn) = Connection::get() {
-            if let Some(window_inner) = conn.windows.borrow().values().next() {
-                persist_window_geometry(*window_inner.borrow().window);
+    if let Some(conn) = Connection::get() {
+        let tracked_len = conn.windows.borrow().len();
+        log::info!(
+            "window geometry: on_app_terminating begin, tracked_windows={}",
+            tracked_len
+        );
+        for window_inner in conn.windows.borrow().values() {
+            let window = *window_inner.borrow().window;
+            if persist_window_geometry(window) {
+                log::info!("window geometry: on_app_terminating persisted successfully");
+                return;
             }
         }
     }
 
-    TERMINATING.store(true, Ordering::Relaxed);
+    log::warn!(
+        "on_app_terminating failed to persist window geometry; \
+         falling back to window_will_close save path"
+    );
 }
 
-fn persist_window_geometry(window: *mut Object) {
+fn persist_window_geometry(window: *mut Object) -> bool {
+    if window.is_null() {
+        return false;
+    }
+
     let style_mask = unsafe { NSWindow::styleMask(window) };
     if style_mask.contains(NSWindowStyleMask::NSFullScreenWindowMask) {
-        return;
+        log::info!("window geometry: skip persist for fullscreen window {:?}", window);
+        return false;
     }
 
     let file_name = persisted_window_geometry_file();
@@ -589,7 +581,7 @@ fn persist_window_geometry(window: *mut Object) {
                 parent,
                 err
             );
-            return;
+            return false;
         }
     }
 
@@ -609,6 +601,17 @@ fn persist_window_geometry(window: *mut Object) {
             file_name,
             err
         );
+        false
+    } else {
+        log::info!(
+            "Persisted window geometry ({}, {}, {}, {}) to {:?}",
+            geometry.x,
+            geometry.y,
+            geometry.width,
+            geometry.height,
+            file_name
+        );
+        true
     }
 }
 
@@ -748,8 +751,6 @@ impl Window {
             let active_screen = NSScreen::mainScreen(nil);
             let active_screen_frame = NSScreen::frame(active_screen);
 
-
-
             LAST_POSITION.with(|last_pos| {
                 if let Some(pos) = explicit_initial_pos {
                     // Put it where they asked it to be, without influencing
@@ -758,10 +759,12 @@ impl Window {
                     return;
                 }
                 if let Some(pos) = persisted_initial_pos {
-                    if point_in_any_screen(screen_point_to_cartesian(pos)) {
-                        set_window_position(*window, pos);
-                        return;
-                    }
+                    // Prefer restoring exactly what we persisted and let AppKit
+                    // clamp if needed; screen-space checks can misclassify valid
+                    // coordinates on mixed-DPI/multi-display setups.
+                    log::info!("window geometry: restoring persisted position to {:?}", pos);
+                    set_window_position(*window, pos);
+                    return;
                 }
                 let pos = last_pos.borrow_mut().take();
                 let next_pos = match pos {
@@ -998,6 +1001,13 @@ impl WindowOps for Window {
                     .events
                     .dispatch(WindowEvent::SetInnerSizeCompleted);
             }
+            Ok(())
+        });
+    }
+
+    fn request_drag_move(&self) {
+        Connection::with_window_inner(self.id, |inner| {
+            inner.request_drag_move();
             Ok(())
         });
     }
@@ -1468,6 +1478,16 @@ impl WindowInner {
 
     fn set_window_position(&self, coords: ScreenPoint) {
         set_window_position(*self.window, coords);
+    }
+
+    fn request_drag_move(&self) {
+        unsafe {
+            let app = NSApplication::sharedApplication(nil);
+            let event: id = msg_send![app, currentEvent];
+            if event != nil {
+                let () = msg_send![*self.window, performWindowDragWithEvent: event];
+            }
+        }
     }
 
     fn set_text_cursor_position(&mut self, cursor: Rect) {
@@ -2468,6 +2488,12 @@ impl WindowView {
         NO
     }
 
+    // Keep native title-bar dragging enabled.
+    // Terminal-side mouse handlers suppress accidental selection/scroll.
+    extern "C" fn mouse_down_can_move_window(_this: &Object, _sel: Sel) -> BOOL {
+        YES
+    }
+
     // Don't use Cocoa native window tabbing
     extern "C" fn allow_automatic_tabbing(_this: &Object, _sel: Sel) -> BOOL {
         NO
@@ -2498,17 +2524,18 @@ impl WindowView {
     extern "C" fn window_will_close(this: &mut Object, _sel: Sel, _id: id) {
         if let Some(this) = Self::get_this(this) {
             let conn = Connection::get().unwrap();
-            // During app termination, on_app_terminating() already persisted the
-            // key window's geometry. Skip here to avoid overwriting it with a
-            // random window's data as AppKit closes each window in turn.
-            // For individual window closes, only persist for the last window so
-            // we consistently restore the user's most recent session.
-            if !TERMINATING.load(Ordering::Relaxed) && conn.windows.borrow().len() == 1 {
-                if let Some(window) = this.inner.borrow().window.as_ref() {
-                    let window = window.load();
-                    if !window.is_null() {
-                        persist_window_geometry(*window);
-                    }
+            let tracked_before = conn.windows.borrow().len();
+            // Keep close-path persistence simple and reliable: always persist
+            // geometry of the closing window.
+            if let Some(window) = this.inner.borrow().window.as_ref() {
+                let window = window.load();
+                if !window.is_null() {
+                    log::info!(
+                        "window geometry: window_will_close persist window={:?} tracked_before={}",
+                        *window,
+                        tracked_before
+                    );
+                    persist_window_geometry(*window);
                 }
             }
             // Advise the window of its impending death
@@ -3461,6 +3488,11 @@ impl WindowView {
             cls.add_method(
                 sel!(isOpaque),
                 Self::is_opaque as extern "C" fn(&Object, Sel) -> BOOL,
+            );
+
+            cls.add_method(
+                sel!(mouseDownCanMoveWindow),
+                Self::mouse_down_can_move_window as extern "C" fn(&Object, Sel) -> BOOL,
             );
 
             cls.add_method(
