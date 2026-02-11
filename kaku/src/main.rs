@@ -802,12 +802,11 @@ fn select_main_menu_command() -> anyhow::Result<SubCommand> {
     println!("  2. update   Check and install latest version");
     println!("  3. init     Initialize shell integration");
     println!("  4. reset    Remove Kaku shell integration and managed defaults");
-    println!("  5. start    Launch Kaku GUI");
     println!("  q. quit");
     println!();
 
     loop {
-        print!("Select option [1-5/q]: ");
+        print!("Select option [1-4/q]: ");
         std::io::stdout().flush().context("flush stdout")?;
 
         let mut input = String::new();
@@ -820,10 +819,9 @@ fn select_main_menu_command() -> anyhow::Result<SubCommand> {
             "2" | "update" => return Ok(SubCommand::Update(update::UpdateCommand::default())),
             "3" | "init" => return Ok(SubCommand::Init(init::InitCommand::default())),
             "4" | "reset" => return Ok(SubCommand::Reset(reset::ResetCommand::default())),
-            "5" | "start" => return Ok(SubCommand::Start(StartCommand::default())),
             "q" | "quit" | "exit" => std::process::exit(0),
             _ => {
-                println!("Invalid option. Enter 1, 2, 3, 4, 5, or q.");
+                println!("Invalid option. Enter 1, 2, 3, 4, or q.");
             }
         }
     }
