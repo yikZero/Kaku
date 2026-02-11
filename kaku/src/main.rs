@@ -18,6 +18,7 @@ use wezterm_gui_subcommands::*;
 
 mod asciicast;
 mod cli;
+mod update;
 
 //    let message = "; ❤ 😍🤢\n\x1b[91;mw00t\n\x1b[37;104;m bleet\x1b[0;m.";
 
@@ -127,6 +128,12 @@ enum SubCommand {
         #[arg(long, value_parser)]
         shell: Shell,
     },
+
+    #[command(
+        name = "update",
+        about = "Download and install the latest Kaku release automatically"
+    )]
+    Update(update::UpdateCommand),
 }
 
 use termwiz::escape::osc::{
@@ -741,6 +748,7 @@ fn run() -> anyhow::Result<()> {
             generate_completion(shell, &mut cmd, name, &mut std::io::stdout());
             Ok(())
         }
+        SubCommand::Update(cmd) => cmd.run(),
     }
 }
 

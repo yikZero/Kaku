@@ -12,9 +12,10 @@ use mux::{Mux, MuxNotification};
 use promise::{Future, Promise};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
-use std::convert::TryInto;
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use wezterm_term::{Alert, ClipboardSelection};
 use wezterm_toast_notification::*;
@@ -34,67 +35,68 @@ impl Drop for GuiFrontEnd {
     }
 }
 
+static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
 pub fn check_for_updates() {
+    if UPDATE_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+        return;
+    }
     std::thread::spawn(move || {
-        log::info!("Checking for updates...");
-        let url = "https://api.github.com/repos/tw93/Kaku/releases/latest";
-        let mut writer = Vec::new();
+        let result = (|| -> anyhow::Result<()> {
+            let current_exe = std::env::current_exe().context("resolve executable path")?;
+            let exe_dir = current_exe
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("missing executable parent directory"))?;
 
-        let res = http_req::request::Request::new(&url.try_into().unwrap())
-            .header("User-Agent", "Kaku-Terminal")
-            .send(&mut writer);
-
-        match res {
-            Ok(resp) => {
-                if resp.status_code().is_success() {
-                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&writer) {
-                        if let Some(tag_name) = json.get("tag_name").and_then(|v| v.as_str()) {
-                            let current_version = config::wezterm_version();
-                            let latest_version =
-                                tag_name.trim_start_matches(|c| c == 'v' || c == 'V');
-                            let release_url = json
-                                .get("html_url")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("https://github.com/tw93/Kaku/releases/latest")
-                                .to_string();
-
-                            if latest_version != current_version {
-                                let message = format!(
-                                    "A new version {} is available and you are using {}.\n\nPlease download the latest version manually.",
-                                    latest_version, current_version
-                                );
-
-                                promise::spawn::spawn_into_main_thread(async move {
-                                    if let Some(conn) = Connection::get() {
-                                        if conn.confirm(
-                                            "Check for Updates",
-                                            &message,
-                                            "Go to Release",
-                                        ) {
-                                            wezterm_open_url::open_url(&release_url);
-                                        }
-                                    }
-                                })
-                                .detach();
-                            } else {
-                                let message = format!(
-                                    "You are using the latest version {}.",
-                                    current_version
-                                );
-                                promise::spawn::spawn_into_main_thread(async move {
-                                    if let Some(conn) = Connection::get() {
-                                        conn.alert("Check for Updates", &message);
-                                    }
-                                })
-                                .detach();
-                            }
-                        }
-                    }
-                }
+            let kaku_bin = exe_dir.join("kaku");
+            if !kaku_bin.exists() {
+                anyhow::bail!("could not find kaku binary at {}", kaku_bin.display());
             }
-            Err(e) => {
-                log::error!("Failed to check for updates: {}", e);
-                let msg = format!("Failed to check for updates: {}", e);
+
+            let target_app = current_exe
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+                .ok_or_else(|| anyhow::anyhow!("failed to locate Kaku.app from executable path"))?;
+
+            let mut child = Command::new(&kaku_bin)
+                .arg("update")
+                .env("KAKU_UPDATE_TARGET_APP", target_app)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .with_context(|| format!("failed to launch {}", kaku_bin.display()))?;
+
+            // Wait for kaku update to finish so UPDATE_IN_PROGRESS stays true
+            // for the full duration of the update, not just the spawn call.
+            let status = child.wait().context("failed to wait for kaku update")?;
+            if !status.success() {
+                anyhow::bail!(
+                    "kaku update exited with status {}",
+                    status.code().unwrap_or(-1)
+                );
+            }
+
+            Ok(())
+        })();
+
+        UPDATE_IN_PROGRESS.store(false, Ordering::SeqCst);
+        match result {
+            Ok(()) => {
+                promise::spawn::spawn_into_main_thread(async move {
+                    if let Some(conn) = Connection::get() {
+                        conn.alert(
+                            "Check for Updates",
+                            "Checking for updates in background. Kaku will relaunch if a new version is found.",
+                        );
+                    }
+                })
+                .detach();
+            }
+            Err(err) => {
+                let msg = format!("Failed to start update: {:#}", err);
+                log::error!("{}", msg);
                 promise::spawn::spawn_into_main_thread(async move {
                     if let Some(conn) = Connection::get() {
                         conn.alert("Check for Updates", &msg);
@@ -628,6 +630,10 @@ pub fn try_new() -> Result<Rc<GuiFrontEnd>, Error> {
 
     let config_subscription = config::subscribe_to_config_reload({
         move || {
+            // TODO(macos): AppKit does not allow safe async menubar reconstruction
+            // from a config-reload callback; the initial menubar is built synchronously
+            // in try_new(). Re-enable on macOS once a safe main-thread dispatch path
+            // is available.
             #[cfg(not(target_os = "macos"))]
             {
                 promise::spawn::spawn_into_main_thread(async {

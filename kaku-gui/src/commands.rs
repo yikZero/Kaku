@@ -456,7 +456,7 @@ impl CommandDef {
                         menu.add_item(&about_item);
 
                         let check_update = MenuItem::new_with(
-                            "Check for Updates...",
+                            "Update Kaku...",
                             Some(kaku_perform_key_assignment_sel),
                             "",
                         );
