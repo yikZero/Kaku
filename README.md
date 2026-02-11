@@ -1,6 +1,7 @@
 <div align="center">
   <h1>Kaku</h1>
   <p><em>A fast, out-of-the-box terminal built for AI coding.</em></p>
+  <p><a href="README_CN.md">中文</a> | English</p>
 </div>
 
 <p align="center">

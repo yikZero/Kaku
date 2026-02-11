@@ -54,7 +54,7 @@ impl super::TermWindow {
         }
 
         if let Some(webgpu) = self.webgpu.as_mut() {
-            webgpu.resize(dimensions);
+            webgpu.resize(dimensions, live_resizing);
         }
 
         // For simple, user-interactive resizes where the dpi doesn't change,

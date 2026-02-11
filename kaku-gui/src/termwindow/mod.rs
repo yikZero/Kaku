@@ -1079,19 +1079,28 @@ impl TermWindow {
                 self.dimensions.pixel_height as u32,
             ),
         );
-        self.paint_impl(&mut RenderFrame::Glium(&mut frame));
+        if let Err(err) = self.paint_impl(&mut RenderFrame::Glium(&mut frame)) {
+            log::error!("paint_impl failed: {:#}", err);
+        }
         window.finish_frame(frame).is_ok()
     }
 
     fn do_paint_webgpu(&mut self) -> anyhow::Result<bool> {
-        self.webgpu.as_mut().unwrap().resize(self.dimensions);
+        self.webgpu.as_mut().unwrap().resize(self.dimensions, false);
         match self.do_paint_webgpu_impl() {
             Ok(ok) => Ok(ok),
             Err(err) => {
                 match err.downcast_ref::<wgpu::SurfaceError>() {
                     Some(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                        self.webgpu.as_mut().unwrap().resize(self.dimensions);
+                        log::warn!("wgpu surface lost/outdated, reconfiguring and retrying");
+                        self.webgpu.as_mut().unwrap().resize(self.dimensions, false);
                         return self.do_paint_webgpu_impl();
+                    }
+                    Some(wgpu::SurfaceError::Timeout) => {
+                        // Under Fifo present mode this can happen transiently
+                        // during rapid resize; skip this frame rather than crash
+                        log::debug!("wgpu surface timeout, skipping frame");
+                        return Ok(false);
                     }
                     _ => {}
                 }
@@ -1101,7 +1110,7 @@ impl TermWindow {
     }
 
     fn do_paint_webgpu_impl(&mut self) -> anyhow::Result<bool> {
-        self.paint_impl(&mut RenderFrame::WebGpu);
+        self.paint_impl(&mut RenderFrame::WebGpu)?;
         Ok(true)
     }
 

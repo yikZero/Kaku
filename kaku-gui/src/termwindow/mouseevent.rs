@@ -724,7 +724,32 @@ impl super::TermWindow {
             }
         }
 
-        if capture_mouse {
+        // Compute near_window_edge early so we can prevent mouse capture
+        // from being set when the user clicks near the edge to resize.
+        // Without this, the Press sets capture → subsequent Move events
+        // during OS resize are routed to the terminal → unwanted selection.
+        let outside_window = event.coords.x < 0
+            || event.coords.x as usize > self.dimensions.pixel_width
+            || event.coords.y < 0
+            || event.coords.y as usize > self.dimensions.pixel_height;
+
+        #[cfg(target_os = "macos")]
+        let base_dpi: usize = 72;
+        #[cfg(not(target_os = "macos"))]
+        let base_dpi: usize = 96;
+        let edge_to_btn_gap: usize = 7;
+        let traffic_light_btn_diameter: usize = 14;
+        let resize_zone_pt = edge_to_btn_gap + traffic_light_btn_diameter;
+        let resize_zone =
+            (resize_zone_pt * self.dimensions.dpi / base_dpi).max(resize_zone_pt) as isize;
+        let near_window_edge = event.coords.x < resize_zone
+            || (event.coords.x as usize)
+                >= self.dimensions.pixel_width.saturating_sub(resize_zone as usize)
+            || event.coords.y < resize_zone
+            || (event.coords.y as usize)
+                >= self.dimensions.pixel_height.saturating_sub(resize_zone as usize);
+
+        if capture_mouse && !near_window_edge {
             self.current_mouse_capture = Some(MouseCapture::TerminalPane(pane.pane_id()));
         }
 
@@ -828,16 +853,11 @@ impl super::TermWindow {
             }
         };
 
-        let outside_window = event.coords.x < 0
-            || event.coords.x as usize > self.dimensions.pixel_width
-            || event.coords.y < 0
-            || event.coords.y as usize > self.dimensions.pixel_height;
-
         context.set_cursor(Some(if self.current_highlight.is_some() {
             // When hovering over a hyperlink, show an appropriate
             // mouse cursor to give the cue that it is clickable
             MouseCursor::Hand
-        } else if pane.is_mouse_grabbed() || outside_window {
+        } else if pane.is_mouse_grabbed() || outside_window || near_window_edge {
             MouseCursor::Arrow
         } else {
             MouseCursor::Text
@@ -914,7 +934,7 @@ impl super::TermWindow {
             }),
         };
 
-        if allow_action {
+        if allow_action && !near_window_edge {
             if let Some(mut event_trigger_type) = event_trigger_type {
                 self.current_event = Some(event_trigger_type.to_dynamic());
                 let mut modifiers = event.modifiers;
@@ -1030,6 +1050,7 @@ impl super::TermWindow {
         };
 
         if allow_action
+            && !near_window_edge
             && !(self.config.swallow_mouse_click_on_pane_focus && is_click_to_focus_pane)
         {
             pane.mouse_event(mouse_event).ok();
