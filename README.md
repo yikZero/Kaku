@@ -66,9 +66,9 @@ Kaku comes with a carefully curated suite of CLI tools, pre-configured for immed
 
 Kaku is fully configurable via standard Lua scripts and is 100% compatible with WezTerm configuration.
 
-Create your user config at:
+On macOS, bundled defaults in `Kaku.app/Contents/Resources/kaku.lua` are fallback only, so user config is loaded first.
 
-`~/.config/kaku/kaku.lua`
+Use a single user config path: `~/.config/kaku/kaku.lua`.
 
 ## Why Kaku?
 
