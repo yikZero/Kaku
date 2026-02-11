@@ -96,8 +96,8 @@ jobs:
             target/aarch64-apple-darwin/release/kaku-gui \
             target/x86_64-apple-darwin/release/kaku-gui
 
-          lipo -verify_arch arm64 x86_64 target/universal/release/kaku
-          lipo -verify_arch arm64 x86_64 target/universal/release/kaku-gui
+          lipo target/universal/release/kaku -verify_arch arm64 x86_64
+          lipo target/universal/release/kaku-gui -verify_arch arm64 x86_64
 
           lipo -info target/universal/release/kaku
           lipo -info target/universal/release/kaku-gui
