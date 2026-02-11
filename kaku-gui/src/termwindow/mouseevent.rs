@@ -76,6 +76,7 @@ impl super::TermWindow {
         } + border.top.get() as isize;
 
         let (padding_left, padding_top) = self.padding_left_top();
+        let terminal_origin_y = first_line_offset + padding_top as isize;
 
         let y = (event
             .coords
@@ -128,7 +129,8 @@ impl super::TermWindow {
                 if press == &MousePress::Left {
                     let was_dragging_window = self.is_window_dragging;
                     self.is_window_dragging = false;
-                    if self.window_drag_position.take().is_some() || was_dragging_window {
+                    let had_manual_drag_anchor = self.window_drag_position.take().is_some();
+                    if had_manual_drag_anchor || was_dragging_window {
                         // Completed a window drag
                         return;
                     }
@@ -167,6 +169,17 @@ impl super::TermWindow {
                 self.last_mouse_click = Some(click);
                 self.current_mouse_buttons.retain(|p| p != press);
                 self.current_mouse_buttons.push(*press);
+
+                if press == &MousePress::Left
+                    && first_line_offset > 0
+                    && (event.coords.y as usize) < first_line_offset as usize
+                {
+                    // A left press in the title/tab strip may turn into a native
+                    // window drag. Enter drag-protection immediately so we don't
+                    // route follow-up motion/wheel into terminal selection/scroll.
+                    self.current_mouse_capture = Some(MouseCapture::UI);
+                    self.is_window_dragging = true;
+                }
             }
 
             WMEK::Move => {
@@ -174,6 +187,7 @@ impl super::TermWindow {
                     if event.mouse_buttons != WMB::LEFT {
                         self.window_drag_position = None;
                         self.is_window_dragging = false;
+                        self.current_mouse_capture = None;
                     } else {
                         // Dragging the window
                         // Compute the distance since the initial event
@@ -199,11 +213,21 @@ impl super::TermWindow {
                     if event.mouse_buttons == WMB::NONE {
                         // Defensive reset in case release was consumed by native drag.
                         self.is_window_dragging = false;
+                        self.current_mouse_capture = None;
                     } else {
                         // We requested a native drag move; while it is active,
                         // suppress terminal mouse handling to avoid accidental scrolling.
                         return;
                     }
+                }
+                if event.mouse_buttons != WMB::NONE
+                    && self.current_mouse_buttons.is_empty()
+                    && self.current_mouse_capture.is_none()
+                {
+                    // Ignore drag motion that started outside the terminal view
+                    // (for example, dragging the native title bar and crossing
+                    // into content), so we don't accidentally select/scroll.
+                    return;
                 }
 
                 if let Some((item, start_event)) = self.dragging.take() {
@@ -213,6 +237,24 @@ impl super::TermWindow {
             }
             WMEK::VertWheel(_) | WMEK::HorzWheel(_) => {
                 if self.is_window_dragging {
+                    return;
+                }
+                if event.mouse_buttons != WMB::NONE
+                    && !matches!(self.current_mouse_capture, Some(MouseCapture::TerminalPane(_)))
+                {
+                    // While a non-terminal drag is active (for example native
+                    // window dragging in title/tab areas), ignore wheel input
+                    // so we don't scroll terminal content under the pointer.
+                    return;
+                }
+                if matches!(
+                    self.resolve_ui_item(&event).map(|item| item.item_type),
+                    Some(UIItemType::TabBar(_))
+                ) {
+                    // Title/tab area wheel gestures should not affect terminal scroll.
+                    return;
+                }
+                if event.coords.y < terminal_origin_y {
                     return;
                 }
             }
@@ -252,10 +294,26 @@ impl super::TermWindow {
                 self.current_mouse_capture = Some(MouseCapture::UI);
             }
             self.mouse_event_ui_item(item, pane, y, event, context);
+        } else if matches!(event.kind, WMEK::Press(MousePress::Left))
+            && event.coords.y < terminal_origin_y
+        {
+            // Click landed above terminal content (title/tab/padding area)
+            // but missed every UIItem. Treat it as a window drag start so
+            // the event never reaches the terminal.
+            let maximized = self
+                .window_state
+                .intersects(WindowState::MAXIMIZED | WindowState::FULL_SCREEN);
+            self.current_mouse_capture = Some(MouseCapture::UI);
+            self.is_window_dragging = true;
+            if !maximized {
+                self.window_drag_position.replace(event.clone());
+            }
+            context.request_drag_move();
         } else if matches!(
             self.current_mouse_capture,
             None | Some(MouseCapture::TerminalPane(_))
-        ) {
+        ) && event.coords.y >= terminal_origin_y
+        {
             self.mouse_event_terminal(
                 pane,
                 ClickPosition {
