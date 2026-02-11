@@ -144,100 +144,52 @@ fi
 
 mkdir -p "$HOME/.config/kaku"
 
+resolve_kaku_cli() {
+	local candidates=(
+		"$RESOURCES_DIR/../MacOS/kaku"
+		"/Applications/Kaku.app/Contents/MacOS/kaku"
+		"$HOME/Applications/Kaku.app/Contents/MacOS/kaku"
+	)
+
+	local candidate
+	for candidate in "${candidates[@]}"; do
+		if [[ -x "$candidate" ]]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+
+	if command -v kaku >/dev/null 2>&1; then
+		command -v kaku
+		return 0
+	fi
+
+	return 1
+}
+
+ensure_user_config_via_cli() {
+	local kaku_lua_dest="$HOME/.config/kaku/kaku.lua"
+	if [[ -f "$kaku_lua_dest" ]]; then
+		echo "Keeping existing user config: $kaku_lua_dest"
+		return 0
+	fi
+
+	local kaku_bin
+	if ! kaku_bin="$(resolve_kaku_cli)"; then
+		echo "Warning: kaku CLI not found, skipped config initialization."
+		return 0
+	fi
+
+	if "$kaku_bin" config --ensure-only >/dev/null 2>&1; then
+		echo "Created minimal user config: $kaku_lua_dest"
+	else
+		echo "Warning: failed to initialize user config via '$kaku_bin config --ensure-only'."
+	fi
+}
+
 # Process Kaku Theme
 if [[ "$INSTALL_THEME" == "true" ]]; then
-	KAKU_LUA_SRC="$RESOURCES_DIR/kaku.lua"
-	KAKU_LUA_DEST="$HOME/.config/kaku/kaku.lua"
-
-	if [[ -f "$KAKU_LUA_SRC" ]]; then
-		if [[ ! -f "$KAKU_LUA_DEST" ]]; then
-			cp "$KAKU_LUA_SRC" "$KAKU_LUA_DEST"
-			echo "Created default kaku.lua from bundled template."
-		fi
-
-		if grep -q "===== Kaku Theme =====" "$KAKU_LUA_DEST" 2>/dev/null || grep -q "===== Kaku Theme Defaults (managed) =====" "$KAKU_LUA_DEST" 2>/dev/null; then
-			echo "Kaku theme block already exists, skipping duplicate injection."
-		else
-			echo "Applying Kaku theme defaults (missing keys only)..."
-			TMP_FILE=$(mktemp)
-			TMP_TAIL_FILE=$(mktemp)
-
-			RETURN_LINE="$(grep -nE '^[[:space:]]*return[[:space:]]+config[[:space:]]*$' "$KAKU_LUA_DEST" | tail -n 1 | cut -d: -f1 || true)"
-			if [[ -n "$RETURN_LINE" ]]; then
-				if [[ "$RETURN_LINE" -gt 1 ]]; then
-					sed -n "1,$((RETURN_LINE - 1))p" "$KAKU_LUA_DEST" >"$TMP_FILE"
-				else
-					: >"$TMP_FILE"
-				fi
-				sed -n "$((RETURN_LINE + 1)),\$p" "$KAKU_LUA_DEST" >"$TMP_TAIL_FILE"
-				APPEND_RETURN=true
-			else
-				cat "$KAKU_LUA_DEST" >"$TMP_FILE"
-				: >"$TMP_TAIL_FILE"
-				APPEND_RETURN=false
-			fi
-
-			cat <<'EOF' >>"$TMP_FILE"
-
--- ===== Kaku Theme Defaults (managed) =====
-config.colors = config.colors or {}
-config.colors.foreground = config.colors.foreground or '#d4d4d4'
-config.colors.background = config.colors.background or '#1e1e1e'
-config.colors.cursor_bg = config.colors.cursor_bg or '#569cd6'
-config.colors.cursor_fg = config.colors.cursor_fg or '#1e1e1e'
-config.colors.cursor_border = config.colors.cursor_border or '#569cd6'
-config.colors.selection_bg = config.colors.selection_bg or '#264f78'
-config.colors.selection_fg = config.colors.selection_fg or '#d4d4d4'
-
-if not config.colors.ansi then
-  config.colors.ansi = {'#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5'}
-end
-if not config.colors.brights then
-  config.colors.brights = {'#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#e5e5e5'}
-end
-
-config.colors.tab_bar = config.colors.tab_bar or {}
-config.colors.tab_bar.background = config.colors.tab_bar.background or '#1e1e1e'
-config.colors.tab_bar.active_tab = config.colors.tab_bar.active_tab or {}
-config.colors.tab_bar.active_tab.bg_color = config.colors.tab_bar.active_tab.bg_color or '#1e1e1e'
-config.colors.tab_bar.active_tab.fg_color = config.colors.tab_bar.active_tab.fg_color or '#569cd6'
-config.colors.tab_bar.active_tab.intensity = config.colors.tab_bar.active_tab.intensity or 'Bold'
-config.colors.tab_bar.inactive_tab = config.colors.tab_bar.inactive_tab or {}
-config.colors.tab_bar.inactive_tab.bg_color = config.colors.tab_bar.inactive_tab.bg_color or '#2d2d2d'
-config.colors.tab_bar.inactive_tab.fg_color = config.colors.tab_bar.inactive_tab.fg_color or '#858585'
-config.colors.tab_bar.inactive_tab_hover = config.colors.tab_bar.inactive_tab_hover or {}
-config.colors.tab_bar.inactive_tab_hover.bg_color = config.colors.tab_bar.inactive_tab_hover.bg_color or '#2d2d2d'
-config.colors.tab_bar.inactive_tab_hover.fg_color = config.colors.tab_bar.inactive_tab_hover.fg_color or '#d4d4d4'
-config.colors.tab_bar.new_tab = config.colors.tab_bar.new_tab or {}
-config.colors.tab_bar.new_tab.bg_color = config.colors.tab_bar.new_tab.bg_color or '#1e1e1e'
-config.colors.tab_bar.new_tab.fg_color = config.colors.tab_bar.new_tab.fg_color or '#858585'
-config.colors.tab_bar.new_tab_hover = config.colors.tab_bar.new_tab_hover or {}
-config.colors.tab_bar.new_tab_hover.bg_color = config.colors.tab_bar.new_tab_hover.bg_color or '#2d2d2d'
-config.colors.tab_bar.new_tab_hover.fg_color = config.colors.tab_bar.new_tab_hover.fg_color or '#d4d4d4'
-
-config.window_frame = config.window_frame or {}
-config.window_frame.active_titlebar_bg = config.window_frame.active_titlebar_bg or '#1e1e1e'
-config.window_frame.inactive_titlebar_bg = config.window_frame.inactive_titlebar_bg or '#1e1e1e'
-config.window_frame.button_bg = config.window_frame.button_bg or '#1e1e1e'
-config.window_frame.button_fg = config.window_frame.button_fg or '#cccccc'
-EOF
-
-			if [[ "$APPEND_RETURN" == "true" ]]; then
-				echo "" >>"$TMP_FILE"
-				echo "return config" >>"$TMP_FILE"
-				if [[ -s "$TMP_TAIL_FILE" ]]; then
-					echo "" >>"$TMP_FILE"
-					cat "$TMP_TAIL_FILE" >>"$TMP_FILE"
-				fi
-			fi
-
-			mv "$TMP_FILE" "$KAKU_LUA_DEST"
-			rm -f "$TMP_TAIL_FILE"
-			echo "Kaku theme defaults applied."
-		fi
-	else
-		echo "Warning: Could not find kaku.lua source at $KAKU_LUA_SRC"
-	fi
+	ensure_user_config_via_cli
 fi
 
 # Process Delta Installation
