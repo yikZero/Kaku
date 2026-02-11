@@ -1,7 +1,8 @@
+<p align="right">中文 | <a href="README.md">English</a></p>
+
 <div align="center">
   <h1>Kaku</h1>
   <p><em>一个为 AI 编程打造的快速、开箱即用的终端。</em></p>
-  <p>中文 | <a href="README.md">English</a></p>
 </div>
 
 <p align="center">
