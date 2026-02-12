@@ -3,8 +3,8 @@ use crate::termwindow::{
     GuiWin, MouseCapture, PositionedSplit, ScrollHit, TermWindowNotif, UIItem, UIItemType, TMB,
 };
 use ::window::{
-    MouseButtons as WMB, MouseCursor, MouseEvent, MouseEventKind as WMEK, MousePress,
-    WindowDecorations, WindowOps, WindowState,
+    MouseButtons as WMB, MouseCursor, MouseEvent, MouseEventKind as WMEK, MousePress, WindowOps,
+    WindowState,
 };
 use config::keyassignment::{KeyAssignment, MouseEventTrigger, SpawnTabDomain};
 use config::MouseEventAltScreen;
@@ -301,10 +301,21 @@ impl super::TermWindow {
             // Event landed in title/padding area above terminal content but missed all UI items.
             match event.kind {
                 WMEK::Press(MousePress::Left) => {
-                    // Treat left-click as window drag start.
                     let maximized = self
                         .window_state
                         .intersects(WindowState::MAXIMIZED | WindowState::FULL_SCREEN);
+                    // Double-click in title/padding area: toggle zoom
+                    if event.click_count == 2 {
+                        if let Some(ref window) = self.window {
+                            if maximized {
+                                window.restore();
+                            } else {
+                                window.maximize();
+                            }
+                        }
+                        return;
+                    }
+                    // Single click: start window drag
                     self.current_mouse_capture = Some(MouseCapture::UI);
                     self.is_window_dragging = true;
                     if !maximized && !cfg!(target_os = "macos") {
@@ -597,20 +608,18 @@ impl super::TermWindow {
                     let maximized = self
                         .window_state
                         .intersects(WindowState::MAXIMIZED | WindowState::FULL_SCREEN);
-                    if let Some(ref window) = self.window {
-                        if self.config.window_decorations
-                            == WindowDecorations::INTEGRATED_BUTTONS | WindowDecorations::RESIZE
-                        {
-                            if self.last_mouse_click.as_ref().map(|c| c.streak) == Some(2) {
-                                if maximized {
-                                    window.restore();
-                                } else {
-                                    window.maximize();
-                                }
+                    // Double-click on empty tab bar area: toggle zoom
+                    if event.click_count == 2 {
+                        if let Some(ref window) = self.window {
+                            if maximized {
+                                window.restore();
+                            } else {
+                                window.maximize();
                             }
                         }
+                        return;
                     }
-                    // Potentially starting a drag by the tab bar
+                    // Single click: start window drag
                     self.is_window_dragging = true;
                     if !maximized && !cfg!(target_os = "macos") {
                         self.window_drag_position.replace(event.clone());
