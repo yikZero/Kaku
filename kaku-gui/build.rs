@@ -154,7 +154,6 @@ END
     #[cfg(target_os = "macos")]
     {
         use anyhow::Context as _;
-        let profile = std::env::var("PROFILE").unwrap();
         let repo_dir = std::env::current_dir()
             .ok()
             .and_then(|cwd| cwd.parent().map(|p| p.to_path_buf()))
@@ -168,9 +167,22 @@ END
             .join("Kaku.app")
             .join("Contents")
             .join("Info.plist");
+        
+        // Use CARGO_TARGET_DIR if set, otherwise derive from OUT_DIR
+        // OUT_DIR is like: target/release-opt/build/kaku-gui-xxx/out
+        // We need to get to: target/release-opt
         let build_target_dir = std::env::var("CARGO_TARGET_DIR")
-            .and_then(|s| Ok(std::path::PathBuf::from(s)))
-            .unwrap_or(repo_dir.join("target").join(profile));
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                let out_dir = std::env::var("OUT_DIR").unwrap();
+                let out_path = std::path::PathBuf::from(out_dir);
+                // Go up 3 levels: out -> build -> kaku-gui-xxx -> release-opt
+                out_path
+                    .ancestors()
+                    .nth(3)
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| repo_dir.join("target").join("release"))
+            });
         let dest_plist = build_target_dir.join("Info.plist");
         println!("cargo:rerun-if-changed=assets/macos/Kaku.app/Contents/Info.plist");
 
