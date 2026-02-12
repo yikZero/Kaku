@@ -174,6 +174,11 @@ END
         let dest_plist = build_target_dir.join("Info.plist");
         println!("cargo:rerun-if-changed=assets/macos/Kaku.app/Contents/Info.plist");
 
+        // Ensure the destination directory exists before copying
+        if let Some(parent) = dest_plist.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
         std::fs::copy(&src_plist, &dest_plist)
             .context(format!(
                 "copy {} -> {}",
