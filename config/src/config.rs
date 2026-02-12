@@ -538,6 +538,13 @@ pub struct Config {
     #[dynamic(default)]
     pub window_padding: WindowPadding,
 
+    /// Number of extra cells of padding added on each side of a split line.
+    /// The split gutter width becomes `1 + 2 * split_pane_gap` cells.
+    /// A value of 2 gives ~40px visual breathing room at typical font sizes,
+    /// matching the outer window padding aesthetic without clipping content.
+    #[dynamic(default)]
+    pub split_pane_gap: u8,
+
     #[dynamic(default)]
     pub window_content_alignment: WindowContentAlignment,
 
