@@ -52,6 +52,24 @@ jobs:
         run: |
           PROFILE=release-opt BUILD_ARCH=universal ./scripts/build.sh
 
+      - name: Notarize Kaku
+        if: env.KAKU_NOTARIZE_PASSWORD != ''
+        env:
+          KAKU_NOTARIZE_APPLE_ID: ${{ secrets.KAKU_NOTARIZE_APPLE_ID }}
+          KAKU_NOTARIZE_TEAM_ID: ${{ secrets.KAKU_NOTARIZE_TEAM_ID }}
+          KAKU_NOTARIZE_PASSWORD: ${{ secrets.KAKU_NOTARIZE_PASSWORD }}
+        run: |
+          echo "Notarizing Kaku..."
+          ./scripts/notarize.sh
+
+      - name: Verify Notarization
+        if: env.KAKU_NOTARIZE_PASSWORD != ''
+        env:
+          KAKU_NOTARIZE_PASSWORD: ${{ secrets.KAKU_NOTARIZE_PASSWORD }}
+        run: |
+          echo "Verifying notarization status..."
+          spctl -a -vv dist/Kaku.app
+
       - name: Upload to Release
         uses: ncipollo/release-action@v1
         with:
