@@ -335,6 +335,13 @@ pub trait WindowOps {
 
     fn config_did_change(&self, _config: &config::ConfigHandle) {}
 
+    /// Check if the window is in a zoom (maximize/restore) animation.
+    /// Returns true if within the animation period to allow hiding content
+    /// during the transition to avoid visual flickering.
+    fn is_zoom_animation_active(&self) -> bool {
+        false
+    }
+
     /// Configure the Window so that the desktop environment
     /// will constrain resizes so that they are multiples of
     /// the x and y values specified.

@@ -677,7 +677,6 @@ impl Window {
                 ime_last_event: None,
                 live_resizing: false,
                 in_fullscreen_transition: false,
-                last_zoom_time: None,
                 ime_text: String::new(),
             }));
 
@@ -1078,6 +1077,27 @@ impl WindowOps for Window {
             border_dimensions,
         }))
     }
+
+    fn is_zoom_animation_active(&self) -> bool {
+        unsafe {
+            if let Some(view) = WindowView::get_this(&*self.ns_view) {
+                // Read zoom time directly from view (Cell<u64> doesn't require borrow)
+                let time_ms = view.last_zoom_time_ms.get();
+                if time_ms == 0 {
+                    false
+                } else {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let elapsed_ms = now_ms.saturating_sub(time_ms);
+                    elapsed_ms < 300 // 300ms = 0.3s
+                }
+            } else {
+                false
+            }
+        }
+    }
 }
 
 /// Convert from a macOS screen coordinate with the origin in the bottom left
@@ -1445,7 +1465,11 @@ impl WindowInner {
             unsafe {
                 // Record zoom time to prevent font flickering during animation
                 if let Some(this) = WindowView::get_this(&**self.view) {
-                    this.inner.borrow_mut().last_zoom_time = Some(Instant::now());
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    this.last_zoom_time_ms.set(now_ms);
                 }
                 NSWindow::zoom_(*self.window, nil);
             }
@@ -1457,7 +1481,11 @@ impl WindowInner {
             unsafe {
                 // Record zoom time to prevent font flickering during animation
                 if let Some(this) = WindowView::get_this(&**self.view) {
-                    this.inner.borrow_mut().last_zoom_time = Some(Instant::now());
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    this.last_zoom_time_ms.set(now_ms);
                 }
                 NSWindow::zoom_(*self.window, nil);
             }
@@ -1730,8 +1758,6 @@ struct Inner {
     /// Whether we're in live resize
     live_resizing: bool,
     in_fullscreen_transition: bool,
-    /// Timestamp of last zoom operation to detect zoom animation
-    last_zoom_time: Option<Instant>,
 
     ime_text: String,
 }
@@ -1986,6 +2012,9 @@ const TITLEBAR_VIEW_NAME: &str = "NSTitlebarContainerView";
 
 struct WindowView {
     inner: Rc<RefCell<Inner>>,
+    /// Timestamp of last zoom operation to detect zoom animation (milliseconds since epoch, 0 = none)
+    /// Stored here instead of Inner to avoid RefCell borrow conflicts during rendering
+    last_zoom_time_ms: Cell<u64>,
 }
 
 pub fn superclass(this: &Object) -> &'static Class {
@@ -3124,17 +3153,18 @@ impl WindowView {
     }
 
     extern "C" fn did_resize(this: &mut Object, _sel: Sel, _notification: id) {
+        // Use try_borrow to avoid panic if already borrowed
         let in_fullscreen_transition = if let Some(this) = Self::get_this(this) {
-            this.inner.borrow().in_fullscreen_transition
+            this.inner.try_borrow().map_or(false, |inner| inner.in_fullscreen_transition)
         } else {
-            false
+            return;
         };
 
         if let Some(this) = Self::get_this(this) {
-            let inner = this.inner.borrow_mut();
-
-            if let Some(gl_context_pair) = inner.gl_context_pair.as_ref() {
-                gl_context_pair.backend.update();
+            if let Ok(inner) = this.inner.try_borrow() {
+                if let Some(gl_context_pair) = inner.gl_context_pair.as_ref() {
+                    gl_context_pair.backend.update();
+                }
             }
         }
 
@@ -3143,7 +3173,10 @@ impl WindowView {
         let width = backing_frame.size.width;
         let height = backing_frame.size.height;
         if let Some(this) = Self::get_this(this) {
-            let mut inner = this.inner.borrow_mut();
+            let mut inner = match this.inner.try_borrow_mut() {
+                Ok(inner) => inner,
+                Err(_) => return, // Already borrowed, skip this resize event
+            };
 
             // This is a little gross; ideally we'd call
             // WindowInner:is_fullscreen to determine this, but
@@ -3162,7 +3195,17 @@ impl WindowView {
             // smooth font scaling updates as the window animates, preventing
             // the text from appearing too large/small during the transition.
             // Zoom animation typically takes ~0.2s, use 0.3s as buffer.
-            let in_zoom_transition = inner.last_zoom_time.map_or(false, |t| t.elapsed().as_secs_f32() < 0.3);
+            let time_ms = this.last_zoom_time_ms.get();
+            let in_zoom_transition = if time_ms == 0 {
+                false
+            } else {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let elapsed_ms = now_ms.saturating_sub(time_ms);
+                elapsed_ms < 300
+            };
             let live_resizing = inner.live_resizing || in_fullscreen_transition || in_zoom_transition;
 
             // Note: isZoomed can falsely return YES in situations such as
@@ -3283,7 +3326,14 @@ impl WindowView {
 
     extern "C" fn draw_rect(view: &mut Object, sel: Sel, _dirty_rect: NSRect) {
         if let Some(this) = Self::get_this(view) {
-            let mut inner = this.inner.borrow_mut();
+            // Use try_borrow_mut to avoid panic if already borrowed (e.g., during zoom animation)
+            let mut inner = match this.inner.try_borrow_mut() {
+                Ok(inner) => inner,
+                Err(_) => {
+                    // Already borrowed, mark as invalidated and return
+                    return;
+                }
+            };
 
             if inner.screen_changed {
                 // If the screen resolution changed (which can also
@@ -3399,6 +3449,7 @@ impl WindowView {
 
         let view = Box::into_raw(Box::new(Self {
             inner: Rc::clone(&inner),
+            last_zoom_time_ms: Cell::new(0),
         }));
 
         unsafe {
