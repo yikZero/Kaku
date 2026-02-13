@@ -2648,6 +2648,10 @@ impl TermWindow {
     }
 
     fn scroll_to_prompt(&mut self, amount: isize, pane: &Arc<dyn Pane>) -> anyhow::Result<()> {
+        // scroll_to_prompt 离开当前视口，退出 peek 模式
+        if pane.is_primary_peek() {
+            pane.set_primary_peek(false);
+        }
         let dims = pane.get_dimensions();
         let position = self
             .get_viewport(pane.pane_id())
@@ -3556,6 +3560,10 @@ impl TermWindow {
     }
 
     fn scroll_to_top(&mut self, pane: &Arc<dyn Pane>) {
+        // scroll_to_top 跳转到历史顶部，退出 peek 模式
+        if pane.is_primary_peek() {
+            pane.set_primary_peek(false);
+        }
         let dims = pane.get_dimensions();
         self.set_viewport(pane.pane_id(), Some(dims.scrollback_top), dims);
     }
