@@ -49,6 +49,16 @@ impl_lua_conversion_dynamic!(RenderableDimensions);
 
 /// Implements Pane::get_cursor_position for Terminal
 pub fn terminal_get_cursor_position(term: &mut Terminal) -> StableCursorPosition {
+    // Peek 模式下隐藏光标（primary screen 光标位置已过时）
+    if term.is_primary_peek() {
+        return StableCursorPosition {
+            x: 0,
+            y: 0,
+            shape: termwiz::surface::CursorShape::Default,
+            visibility: termwiz::surface::CursorVisibility::Hidden,
+        };
+    }
+
     let pos = term.cursor_pos();
 
     StableCursorPosition {
@@ -65,7 +75,12 @@ pub fn terminal_get_dirty_lines(
     lines: Range<StableRowIndex>,
     seqno: SequenceNo,
 ) -> RangeSet<StableRowIndex> {
-    let screen = term.screen();
+    let peek = term.is_primary_peek();
+    let screen = if peek {
+        term.primary_screen()
+    } else {
+        term.screen()
+    };
     let lines = screen.get_changed_stable_rows(lines, seqno);
     let mut set = RangeSet::new();
     for line in lines {
@@ -79,7 +94,12 @@ pub fn terminal_for_each_logical_line_in_stable_range_mut(
     lines: Range<StableRowIndex>,
     for_line: &mut dyn ForEachPaneLogicalLine,
 ) {
-    let screen = term.screen_mut();
+    let peek = term.is_primary_peek();
+    let screen = if peek {
+        term.primary_screen_mut()
+    } else {
+        term.screen_mut()
+    };
     screen.for_each_logical_line_in_stable_range_mut(lines, |stable_range, lines| {
         for_line.with_logical_line_mut(stable_range, lines)
     });
@@ -90,7 +110,12 @@ pub fn terminal_with_lines<F>(term: &mut Terminal, lines: Range<StableRowIndex>,
 where
     F: FnMut(StableRowIndex, &[&Line]),
 {
-    let screen = term.screen_mut();
+    let peek = term.is_primary_peek();
+    let screen = if peek {
+        term.primary_screen_mut()
+    } else {
+        term.screen_mut()
+    };
     let phys_range = screen.stable_range(&lines);
     let first = screen.phys_to_stable_row_index(phys_range.start);
 
@@ -103,7 +128,12 @@ pub fn terminal_with_lines_mut(
     lines: Range<StableRowIndex>,
     with_lines: &mut dyn WithPaneLines,
 ) {
-    let screen = term.screen_mut();
+    let peek = term.is_primary_peek();
+    let screen = if peek {
+        term.primary_screen_mut()
+    } else {
+        term.screen_mut()
+    };
     let phys_range = screen.stable_range(&lines);
     let first = screen.phys_to_stable_row_index(phys_range.start);
 
@@ -115,7 +145,12 @@ pub fn terminal_get_lines(
     term: &mut Terminal,
     lines: Range<StableRowIndex>,
 ) -> (StableRowIndex, Vec<Line>) {
-    let screen = term.screen_mut();
+    let peek = term.is_primary_peek();
+    let screen = if peek {
+        term.primary_screen_mut()
+    } else {
+        term.screen_mut()
+    };
     let phys_range = screen.stable_range(&lines);
 
     let first = screen.phys_to_stable_row_index(phys_range.start);
@@ -127,7 +162,12 @@ pub fn terminal_get_lines(
 /// Implements Pane::get_dimensions for Terminal
 pub fn terminal_get_dimensions(term: &mut Terminal) -> RenderableDimensions {
     let size = term.get_size();
-    let screen = term.screen();
+    let peek = term.is_primary_peek();
+    let screen = if peek {
+        term.primary_screen()
+    } else {
+        term.screen()
+    };
     RenderableDimensions {
         cols: screen.physical_cols,
         viewport_rows: screen.physical_rows,

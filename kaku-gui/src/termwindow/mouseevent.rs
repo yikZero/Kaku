@@ -748,6 +748,10 @@ impl super::TermWindow {
                 ),
                 dims,
             );
+            // 滚到底部时退出 peek 模式
+            if pane.is_primary_peek() && self.get_viewport(pane.pane_id()).is_none() {
+                pane.set_primary_peek(false);
+            }
             context.invalidate();
         }
         context.set_cursor(Some(MouseCursor::Arrow));
@@ -1137,10 +1141,11 @@ impl super::TermWindow {
                     _ => {}
                 };
 
+                let alt_screen = pane.is_alt_screen_active();
                 let mouse_mods = config::MouseEventTriggerMods {
                     mods: modifiers,
                     mouse_reporting,
-                    alt_screen: if pane.is_alt_screen_active() {
+                    alt_screen: if alt_screen {
                         MouseEventAltScreen::True
                     } else {
                         MouseEventAltScreen::False
