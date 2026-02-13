@@ -30,7 +30,6 @@
 
 1. [下载 Kaku DMG](https://github.com/tw93/Kaku/releases/latest) 并拖入 Applications
 2. 或使用 Homebrew 安装：`brew install tw93/tap/kakuku`
-   > 💡 为什么叫 **kakuku**？原名 `kaku` 与 Homebrew 官方仓库中的另一个软件（一个不再维护的音乐播放器）冲突。`kakuku` 是一个可爱的变体，听起来像是终端在"说话"——而且很好记！
 3. 打开 Kaku。应用已通过 Apple 公证，无需安全设置即可直接打开
 4. 首次启动时，Kaku 会自动配置你的 Shell 环境
 
@@ -92,6 +91,16 @@ WezTerm 强大且可扩展，我非常感谢它的引擎。但我想要一个开
 | **Shell 启动** | ~200ms | ~100ms | 优化的环境初始化 |
 
 通过激进地裁剪未使用的功能、懒加载配色方案和 Shell 优化来实现。
+
+## 常见问题
+
+**为什么 Homebrew cask 叫 `kakuku` 而不是 `kaku`？**
+
+因为 `kaku` 与 Homebrew 官方仓库中的另一个软件（一个不再维护的音乐播放器）冲突。`kakuku` 是一个可爱又好记的名字。
+
+**有 Windows 或 Linux 版本吗？**
+
+暂时没有。Kaku 目前仅支持 macOS，我们会先专注于完善 macOS 版的体验。等 macOS 版本成熟后，可能会推出 Windows 和 Linux 版本。
 
 ## 支持
 
