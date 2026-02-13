@@ -111,6 +111,31 @@ impl InputMap {
                     },
                     ScrollByCurrentEventWheelDelta
                 ],
+                // Alt screen (无 mouse reporting): 滚轮触发 Primary Screen Peek
+                [
+                    MouseEventTriggerMods {
+                        mods: Modifiers::NONE,
+                        mouse_reporting: false,
+                        alt_screen: MouseEventAltScreen::True,
+                    },
+                    MouseEventTrigger::Down {
+                        streak: 1,
+                        button: MouseButton::WheelUp(1),
+                    },
+                    ScrollByCurrentEventWheelDelta
+                ],
+                [
+                    MouseEventTriggerMods {
+                        mods: Modifiers::NONE,
+                        mouse_reporting: false,
+                        alt_screen: MouseEventAltScreen::True,
+                    },
+                    MouseEventTrigger::Down {
+                        streak: 1,
+                        button: MouseButton::WheelDown(1),
+                    },
+                    ScrollByCurrentEventWheelDelta
+                ],
                 [
                     MouseEventTriggerMods {
                         mods: Modifiers::NONE,

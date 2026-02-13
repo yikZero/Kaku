@@ -318,6 +318,12 @@ pub trait Pane: Downcast + Send + Sync {
     fn is_mouse_grabbed(&self) -> bool;
     fn is_alt_screen_active(&self) -> bool;
 
+    /// Primary Screen Peek: alt screen 时查看 primary screen 历史
+    fn is_primary_peek(&self) -> bool {
+        false
+    }
+    fn set_primary_peek(&self, _peek: bool) {}
+
     fn set_clipboard(&self, _clipboard: &Arc<dyn Clipboard>) {}
     fn set_download_handler(&self, _handler: &Arc<dyn DownloadHandler>) {}
     fn set_config(&self, _config: Arc<dyn TerminalConfiguration>) {}

@@ -237,6 +237,16 @@ impl ScreenOrAlt {
         }
     }
 
+    /// 访问主屏（无论哪个 screen 活跃）
+    pub fn primary_screen(&self) -> &Screen {
+        &self.screen
+    }
+
+    /// 可变访问主屏
+    pub fn primary_screen_mut(&mut self) -> &mut Screen {
+        &mut self.screen
+    }
+
     pub fn full_reset(&mut self) {
         self.screen.full_reset();
         self.alt_screen.full_reset();
@@ -320,6 +330,9 @@ pub struct TerminalState {
     current_mouse_buttons: Vec<MouseButton>,
     last_mouse_move: Option<MouseEvent>,
     cursor_visible: bool,
+
+    /// Alt screen 时是否显示 primary screen 内容（Primary Screen Peek 模式）
+    primary_peek: bool,
 
     keyboard_encoding: KeyboardEncoding,
     /// Support for US, UK, and DEC Special Graphics
@@ -581,6 +594,7 @@ impl TerminalState {
             bidi_enabled: None,
             bidi_hint: None,
             progress: Progress::default(),
+            primary_peek: false,
         }
     }
 
@@ -754,6 +768,24 @@ impl TerminalState {
 
     pub fn is_alt_screen_active(&self) -> bool {
         self.screen.is_alt_screen_active()
+    }
+
+    /// Primary Screen Peek: alt screen 时切换渲染到 primary screen
+    pub fn is_primary_peek(&self) -> bool {
+        self.primary_peek && self.screen.is_alt_screen_active()
+    }
+
+    pub fn set_primary_peek(&mut self, peek: bool) {
+        self.primary_peek = peek;
+    }
+
+    /// 访问 primary screen（无论哪个 screen 活跃）
+    pub fn primary_screen(&self) -> &Screen {
+        self.screen.primary_screen()
+    }
+
+    pub fn primary_screen_mut(&mut self) -> &mut Screen {
+        self.screen.primary_screen_mut()
     }
 
     /// Returns true if the associated application has enabled
@@ -1270,6 +1302,8 @@ impl TerminalState {
                 self.top_and_bottom_margins = 0..self.screen().physical_rows as i64;
                 self.left_and_right_margins = 0..self.screen().physical_cols;
                 self.left_and_right_margin_mode = false;
+                // 退出 alt screen 时清除 primary_peek，防止状态泄漏
+                self.primary_peek = false;
                 self.screen.activate_alt_screen(self.seqno);
                 self.screen.saved_cursor().take();
                 self.screen.activate_primary_screen(self.seqno);
@@ -1687,6 +1721,7 @@ impl TerminalState {
                 if self.screen.is_alt_screen_active() {
                     self.pen = CellAttributes::default();
                     self.erase_in_display(EraseInDisplay::EraseDisplay);
+                    self.primary_peek = false;
                     self.screen.activate_primary_screen(self.seqno);
                 }
             }
@@ -1695,6 +1730,7 @@ impl TerminalState {
                 DecPrivateModeCode::EnableAlternateScreen,
             )) => {
                 if self.screen.is_alt_screen_active() {
+                    self.primary_peek = false;
                     self.screen.activate_primary_screen(self.seqno);
                     self.pen = CellAttributes::default();
                 }
@@ -1902,6 +1938,7 @@ impl TerminalState {
                 DecPrivateModeCode::ClearAndEnableAlternateScreen,
             )) => {
                 if self.screen.is_alt_screen_active() {
+                    self.primary_peek = false;
                     self.screen.activate_primary_screen(self.seqno);
                     self.dec_restore_cursor();
                 }

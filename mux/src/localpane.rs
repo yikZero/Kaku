@@ -514,6 +514,14 @@ impl Pane for LocalPane {
         }
     }
 
+    fn is_primary_peek(&self) -> bool {
+        self.terminal.lock().is_primary_peek()
+    }
+
+    fn set_primary_peek(&self, peek: bool) {
+        self.terminal.lock().set_primary_peek(peek);
+    }
+
     fn get_current_working_dir(&self, policy: CachePolicy) -> Option<Url> {
         self.terminal
             .lock()
