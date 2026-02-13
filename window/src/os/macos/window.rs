@@ -43,7 +43,7 @@ use raw_window_handle::{
     HasWindowHandle, RawDisplayHandle, RawWindowHandle, WindowHandle,
 };
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{c_void, CStr};
 use std::path::PathBuf;
 use std::ptr::NonNull;
@@ -437,6 +437,8 @@ const MIN_RESTORE_HEIGHT: usize = 120;
 
 thread_local! {
     static LAST_CLOSED_WINDOW_POSITION: RefCell<Option<ScreenPoint>> = RefCell::new(None);
+    // 同步拖拽标志: request_drag_move() 设置，mouse_down 检查后执行 performWindowDragWithEvent:
+    static PENDING_DRAG_MOVE: Cell<bool> = Cell::new(false);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -945,10 +947,9 @@ impl WindowOps for Window {
     }
 
     fn request_drag_move(&self) {
-        Connection::with_window_inner(self.id, |inner| {
-            inner.request_drag_move();
-            Ok(())
-        });
+        // 设置标志，由 mouse_down 同步执行 performWindowDragWithEvent:
+        // 不走 async dispatch，避免模态拖拽循环吞掉后续事件
+        PENDING_DRAG_MOVE.with(|flag| flag.set(true));
     }
 
     fn set_window_position(&self, coords: ScreenPoint) {
@@ -1419,15 +1420,7 @@ impl WindowInner {
         set_window_position(*self.window, coords);
     }
 
-    fn request_drag_move(&self) {
-        unsafe {
-            let app = NSApplication::sharedApplication(nil);
-            let event: id = msg_send![app, currentEvent];
-            if event != nil {
-                let () = msg_send![*self.window, performWindowDragWithEvent: event];
-            }
-        }
-    }
+    // request_drag_move 已移至 mouse_down 中同步执行，避免模态拖拽循环吞掉后续事件
 
     fn set_text_cursor_position(&mut self, cursor: Rect) {
         if let Some(window_view) = WindowView::get_this(unsafe { &**self.view }) {
@@ -2429,7 +2422,7 @@ impl WindowView {
     }
 
     extern "C" fn mouse_down_can_move_window(_this: &Object, _sel: Sel) -> BOOL {
-        YES
+        NO
     }
 
     // Don't use Cocoa native window tabbing
@@ -2521,7 +2514,19 @@ impl WindowView {
     }
 
     extern "C" fn mouse_down(this: &mut Object, _sel: Sel, nsevent: id) {
+        // 清除残留标志，防止上次异常退出导致误触发拖拽
+        PENDING_DRAG_MOVE.with(|flag| flag.set(false));
         Self::mouse_common(this, nsevent, MouseEventKind::Press(MousePress::Left));
+        // 同步执行拖拽：mouse_common 中 app 层可能调用 request_drag_move() 设置标志
+        let pending_drag = PENDING_DRAG_MOVE.with(|flag| flag.replace(false));
+        if pending_drag {
+            unsafe {
+                let window: id = msg_send![this as id, window];
+                if window != nil {
+                    let () = msg_send![window, performWindowDragWithEvent: nsevent];
+                }
+            }
+        }
     }
     extern "C" fn right_mouse_up(this: &mut Object, _sel: Sel, nsevent: id) {
         Self::mouse_common(this, nsevent, MouseEventKind::Release(MousePress::Right));

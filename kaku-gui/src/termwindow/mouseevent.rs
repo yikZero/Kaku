@@ -155,9 +155,15 @@ impl super::TermWindow {
                 // Perform click counting
                 let button = mouse_press_to_tmb(press);
 
+                // 标题/padding 区点击用哨兵行值，防止和终端首行(row=0)串联成双击
+                let click_row = if event.coords.y < terminal_origin_y {
+                    i64::MIN
+                } else {
+                    y
+                };
                 let click_position = ClickPosition {
                     column: x,
-                    row: y,
+                    row: click_row,
                     x_pixel_offset,
                     y_pixel_offset,
                 };
@@ -300,6 +306,17 @@ impl super::TermWindow {
                     let maximized = self
                         .window_state
                         .intersects(WindowState::MAXIMIZED | WindowState::FULL_SCREEN);
+                    // 双击标题区缩放窗口
+                    if self.last_mouse_click.as_ref().map(|c| c.streak) == Some(2) {
+                        if let Some(ref window) = self.window {
+                            if maximized {
+                                window.restore();
+                            } else {
+                                window.maximize();
+                            }
+                        }
+                        return;
+                    }
                     self.current_mouse_capture = Some(MouseCapture::UI);
                     self.is_window_dragging = true;
                     if !maximized && !cfg!(target_os = "macos") {
