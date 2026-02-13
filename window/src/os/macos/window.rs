@@ -44,7 +44,7 @@ use raw_window_handle::{
 };
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -52,7 +52,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use wezterm_font::FontConfiguration;
-use wezterm_input_types::{is_ascii_control, IntegratedTitleButtonStyle, KeyboardLedStatus};
+use wezterm_input_types::{IntegratedTitleButtonStyle, KeyboardLedStatus, is_ascii_control};
 
 static APP_TERMINATING: AtomicBool = AtomicBool::new(false);
 
@@ -437,7 +437,7 @@ const MIN_RESTORE_HEIGHT: usize = 120;
 
 thread_local! {
     static LAST_CLOSED_WINDOW_POSITION: RefCell<Option<ScreenPoint>> = RefCell::new(None);
-    // 同步拖拽标志: request_drag_move() 设置，mouse_down 检查后执行 performWindowDragWithEvent:
+    // Sync drag flag: set by request_drag_move(), checked by mouse_down to execute performWindowDragWithEvent:
     static PENDING_DRAG_MOVE: Cell<bool> = Cell::new(false);
 }
 
@@ -677,6 +677,7 @@ impl Window {
                 ime_last_event: None,
                 live_resizing: false,
                 in_fullscreen_transition: false,
+                last_zoom_time: None,
                 ime_text: String::new(),
             }));
 
@@ -947,8 +948,8 @@ impl WindowOps for Window {
     }
 
     fn request_drag_move(&self) {
-        // 设置标志，由 mouse_down 同步执行 performWindowDragWithEvent:
-        // 不走 async dispatch，避免模态拖拽循环吞掉后续事件
+        // Set flag to be checked by mouse_down and execute performWindowDragWithEvent: synchronously.
+        // Avoids async dispatch to prevent modal drag loop from swallowing subsequent events.
         PENDING_DRAG_MOVE.with(|flag| flag.set(true));
     }
 
@@ -1420,7 +1421,8 @@ impl WindowInner {
         set_window_position(*self.window, coords);
     }
 
-    // request_drag_move 已移至 mouse_down 中同步执行，避免模态拖拽循环吞掉后续事件
+    // request_drag_move moved to mouse_down for synchronous execution to avoid
+    // modal drag loop swallowing subsequent events
 
     fn set_text_cursor_position(&mut self, cursor: Rect) {
         if let Some(window_view) = WindowView::get_this(unsafe { &**self.view }) {
@@ -1441,6 +1443,10 @@ impl WindowInner {
     fn maximize(&mut self) {
         if !self.is_zoomed() {
             unsafe {
+                // Record zoom time to prevent font flickering during animation
+                if let Some(this) = WindowView::get_this(&**self.view) {
+                    this.inner.borrow_mut().last_zoom_time = Some(Instant::now());
+                }
                 NSWindow::zoom_(*self.window, nil);
             }
         }
@@ -1449,6 +1455,10 @@ impl WindowInner {
     fn restore(&mut self) {
         if self.is_zoomed() {
             unsafe {
+                // Record zoom time to prevent font flickering during animation
+                if let Some(this) = WindowView::get_this(&**self.view) {
+                    this.inner.borrow_mut().last_zoom_time = Some(Instant::now());
+                }
                 NSWindow::zoom_(*self.window, nil);
             }
         }
@@ -1720,6 +1730,8 @@ struct Inner {
     /// Whether we're in live resize
     live_resizing: bool,
     in_fullscreen_transition: bool,
+    /// Timestamp of last zoom operation to detect zoom animation
+    last_zoom_time: Option<Instant>,
 
     ime_text: String,
 }
@@ -2104,11 +2116,7 @@ impl WindowView {
     extern "C" fn has_marked_text(this: &mut Object, _sel: Sel) -> BOOL {
         if let Some(myself) = Self::get_this(this) {
             let inner = myself.inner.borrow();
-            if inner.ime_text.is_empty() {
-                NO
-            } else {
-                YES
-            }
+            if inner.ime_text.is_empty() { NO } else { YES }
         } else {
             NO
         }
@@ -2514,10 +2522,10 @@ impl WindowView {
     }
 
     extern "C" fn mouse_down(this: &mut Object, _sel: Sel, nsevent: id) {
-        // 清除残留标志，防止上次异常退出导致误触发拖拽
+        // Clear stale flag to prevent false drag triggers from last abnormal exit
         PENDING_DRAG_MOVE.with(|flag| flag.set(false));
         Self::mouse_common(this, nsevent, MouseEventKind::Press(MousePress::Left));
-        // 同步执行拖拽：mouse_common 中 app 层可能调用 request_drag_move() 设置标志
+        // Execute drag synchronously: app layer may call request_drag_move() in mouse_common to set flag
         let pending_drag = PENDING_DRAG_MOVE.with(|flag| flag.replace(false));
         if pending_drag {
             unsafe {
@@ -3150,10 +3158,12 @@ impl WindowView {
                     style_mask.contains(NSWindowStyleMask::NSFullScreenWindowMask)
                 });
 
-            // During fullscreen transition, treat as live resizing to allow
+            // During fullscreen or zoom transitions, treat as live resizing to allow
             // smooth font scaling updates as the window animates, preventing
             // the text from appearing too large/small during the transition.
-            let live_resizing = inner.live_resizing || in_fullscreen_transition;
+            // Zoom animation typically takes ~0.2s, use 0.3s as buffer.
+            let in_zoom_transition = inner.last_zoom_time.map_or(false, |t| t.elapsed().as_secs_f32() < 0.3);
+            let live_resizing = inner.live_resizing || in_fullscreen_transition || in_zoom_transition;
 
             // Note: isZoomed can falsely return YES in situations such as
             // the current screen changing. We cannot detect that case here.

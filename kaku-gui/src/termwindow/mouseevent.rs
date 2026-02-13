@@ -1,16 +1,16 @@
 use crate::tabbar::TabBarItem;
 use crate::termwindow::{
-    GuiWin, MouseCapture, PositionedSplit, ScrollHit, TermWindowNotif, UIItem, UIItemType, TMB,
+    GuiWin, MouseCapture, PositionedSplit, ScrollHit, TMB, TermWindowNotif, UIItem, UIItemType,
 };
 use ::window::{
     MouseButtons as WMB, MouseCursor, MouseEvent, MouseEventKind as WMEK, MousePress, WindowOps,
     WindowState,
 };
-use config::keyassignment::{KeyAssignment, MouseEventTrigger, SpawnTabDomain};
 use config::MouseEventAltScreen;
+use config::keyassignment::{KeyAssignment, MouseEventTrigger, SpawnTabDomain};
+use mux::Mux;
 use mux::pane::{Pane, WithPaneLines};
 use mux::tab::SplitDirection;
-use mux::Mux;
 use mux_lua::MuxPane;
 use std::convert::TryInto;
 use std::ops::Sub;
@@ -155,7 +155,8 @@ impl super::TermWindow {
                 // Perform click counting
                 let button = mouse_press_to_tmb(press);
 
-                // 标题/padding 区点击用哨兵行值，防止和终端首行(row=0)串联成双击
+                // Use sentinel row value for title/padding area clicks to prevent
+                // chaining with terminal first row (row=0) as a double-click
                 let click_row = if event.coords.y < terminal_origin_y {
                     i64::MIN
                 } else {
@@ -306,7 +307,7 @@ impl super::TermWindow {
                     let maximized = self
                         .window_state
                         .intersects(WindowState::MAXIMIZED | WindowState::FULL_SCREEN);
-                    // 双击标题区缩放窗口
+                    // Double-click title area to zoom window
                     if self.last_mouse_click.as_ref().map(|c| c.streak) == Some(2) {
                         if let Some(ref window) = self.window {
                             if maximized {
