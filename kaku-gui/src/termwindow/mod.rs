@@ -582,6 +582,9 @@ pub struct TermWindow {
     gl: Option<Rc<glium::backend::Context>>,
     webgpu: Option<Rc<WebGpuState>>,
     config_subscription: Option<config::ConfigSubscription>,
+
+    /// Timestamp when "Copied!" toast started showing
+    copy_toast_at: Option<Instant>,
 }
 
 impl TermWindow {
@@ -914,6 +917,7 @@ impl TermWindow {
             key_table_state: KeyTableState::default(),
             modal: RefCell::new(None),
             opengl_info: None,
+            copy_toast_at: None,
         };
 
         let tw = Rc::new(RefCell::new(myself));
@@ -3026,8 +3030,7 @@ impl TermWindow {
                 let text = self.selection_text(pane);
                 if !text.is_empty() {
                     self.copy_to_clipboard(*dest, text);
-                    let window = self.window.as_ref().unwrap();
-                    window.invalidate();
+                    self.show_copy_toast();
                 } else {
                     self.do_open_link_at_mouse_cursor(pane);
                 }
@@ -3036,8 +3039,7 @@ impl TermWindow {
                 let text = self.selection_text(pane);
                 if !text.is_empty() {
                     self.copy_to_clipboard(*dest, text);
-                    let window = self.window.as_ref().unwrap();
-                    window.invalidate();
+                    self.show_copy_toast();
                 }
             }
             ClearScrollback(erase_mode) => {

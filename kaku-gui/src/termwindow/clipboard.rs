@@ -3,8 +3,10 @@ use crate::TermWindow;
 use config::keyassignment::{ClipboardCopyDestination, ClipboardPasteSource};
 use mux::pane::Pane;
 use mux::Mux;
+use smol::Timer;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use window::{Clipboard, ClipboardData, WindowOps};
 
 impl TermWindow {
@@ -21,6 +23,36 @@ impl TermWindow {
             if let Some(c) = c {
                 self.window.as_ref().unwrap().set_clipboard(c, text.clone());
             }
+        }
+    }
+
+    /// Show "Copied!" toast notification (disappears after 1.5 seconds)
+    pub fn show_copy_toast(&mut self) {
+        let now = Instant::now();
+        self.copy_toast_at = Some(now);
+        if let Some(window) = self.window.clone() {
+            let win = window.clone();
+            // Trigger fade-out after 1000ms
+            let fade_win = win.clone();
+            promise::spawn::spawn(async move {
+                Timer::after(Duration::from_millis(1000)).await;
+                fade_win.invalidate();
+            })
+            .detach();
+            // Clear after 1500ms
+            promise::spawn::spawn(async move {
+                Timer::after(Duration::from_millis(1500)).await;
+                window.notify(TermWindowNotif::Apply(Box::new(move |tw| {
+                    if tw.copy_toast_at == Some(now) {
+                        tw.copy_toast_at = None;
+                    }
+                    win.invalidate();
+                })));
+            })
+            .detach();
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.invalidate();
         }
     }
 
