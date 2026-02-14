@@ -235,7 +235,7 @@ config.custom_block_glyphs = true
 config.unicode_version = 14
 
 -- ===== Cursor =====
-config.default_cursor_style = 'SteadyBlock'
+config.default_cursor_style = 'BlinkingBar'
 config.cursor_thickness = '2px'
 config.cursor_blink_rate = 0
 
