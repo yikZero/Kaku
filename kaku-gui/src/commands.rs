@@ -1489,9 +1489,9 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             domain: SpawnTabDomain::CurrentPaneDomain,
             ..
         }) => CommandDef {
-            brief: label_string(action, "Split Vertically (Top/Bottom)".to_string()).into(),
-            doc: "Split the current pane vertically into two panes, by spawning \
-            the default program into the bottom half"
+            brief: label_string(action, "Split Pane Top/Bottom".to_string()).into(),
+            doc: "Split the current pane into top and bottom panes, by spawning \
+            the default program into the bottom pane"
                 .into(),
             keys: vec![(
                 Modifiers::CTRL
@@ -1507,9 +1507,9 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             domain: SpawnTabDomain::CurrentPaneDomain,
             ..
         }) => CommandDef {
-            brief: label_string(action, "Split Horizontally (Left/Right)".to_string()).into(),
-            doc: "Split the current pane horizontally into two panes, by spawning \
-            the default program into the right hand side"
+            brief: label_string(action, "Split Pane Left/Right".to_string()).into(),
+            doc: "Split the current pane into left and right panes, by spawning \
+            the default program into the right pane"
                 .into(),
             keys: vec![(
                 Modifiers::CTRL
@@ -1522,9 +1522,9 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             icon: Some("cod_split_horizontal"),
         },
         SplitHorizontal(_) => CommandDef {
-            brief: label_string(action, "Split Horizontally (Left/Right)".to_string()).into(),
-            doc: "Split the current pane horizontally into two panes, by spawning \
-            the default program into the right hand side"
+            brief: label_string(action, "Split Pane Left/Right".to_string()).into(),
+            doc: "Split the current pane into left and right panes, by spawning \
+            the default program into the right pane"
                 .into(),
             keys: vec![],
             args: &[ArgType::ActivePane],
@@ -1532,9 +1532,9 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             icon: Some("cod_split_horizontal"),
         },
         SplitVertical(_) => CommandDef {
-            brief: label_string(action, "Split Vertically (Top/Bottom)".to_string()).into(),
-            doc: "Split the current pane veritically into two panes, by spawning \
-            the default program into the bottom"
+            brief: label_string(action, "Split Pane Top/Bottom".to_string()).into(),
+            doc: "Split the current pane into top and bottom panes, by spawning \
+            the default program into the bottom pane"
                 .into(),
             keys: vec![],
             args: &[ArgType::ActivePane],
