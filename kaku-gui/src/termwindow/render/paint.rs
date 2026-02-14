@@ -332,9 +332,9 @@ impl crate::TermWindow {
             1.0
         };
 
-        // Use bright cyan (ansi index 14) for toast background
+        // Use bright purple (ansi index 13) for toast background
         let palette = self.palette();
-        let bg_linear = palette.colors.0[14].to_linear();
+        let bg_linear = palette.colors.0[13].to_linear();
         let bg_color = LinearRgba(bg_linear.0, bg_linear.1, bg_linear.2, 0.9 * alpha);
         // Always use white text for visibility
         let text_color = LinearRgba(1.0, 1.0, 1.0, alpha);
@@ -352,28 +352,7 @@ impl crate::TermWindow {
                 bottom: Dimension::Cells(0.25),
             })
             .border(BoxDimension::new(Dimension::Pixels(1.)))
-            .border_corners(Some(Corners {
-                top_left: SizedPoly {
-                    width: Dimension::Cells(0.5),
-                    height: Dimension::Cells(0.5),
-                    poly: TOP_LEFT_ROUNDED_CORNER,
-                },
-                top_right: SizedPoly {
-                    width: Dimension::Cells(0.5),
-                    height: Dimension::Cells(0.5),
-                    poly: TOP_RIGHT_ROUNDED_CORNER,
-                },
-                bottom_left: SizedPoly {
-                    width: Dimension::Cells(0.5),
-                    height: Dimension::Cells(0.5),
-                    poly: BOTTOM_LEFT_ROUNDED_CORNER,
-                },
-                bottom_right: SizedPoly {
-                    width: Dimension::Cells(0.5),
-                    height: Dimension::Cells(0.5),
-                    poly: BOTTOM_RIGHT_ROUNDED_CORNER,
-                },
-            }));
+            .border_corners(None);
 
         let dimensions = self.dimensions;
         let border = self.get_os_border();
