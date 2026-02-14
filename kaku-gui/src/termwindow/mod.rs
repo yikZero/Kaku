@@ -582,6 +582,9 @@ pub struct TermWindow {
     gl: Option<Rc<glium::backend::Context>>,
     webgpu: Option<Rc<WebGpuState>>,
     config_subscription: Option<config::ConfigSubscription>,
+    /// Set when the user explicitly invokes ReloadConfiguration.
+    /// The next config-reload callback consumes this flag and may show toast.
+    show_reload_toast_on_next_config_reload: bool,
 
     /// Toast notification: (start_time, message)
     toast: Option<(Instant, String)>,
@@ -917,6 +920,7 @@ impl TermWindow {
             key_table_state: KeyTableState::default(),
             modal: RefCell::new(None),
             opengl_info: None,
+            show_reload_toast_on_next_config_reload: false,
             toast: None,
         };
 
@@ -1868,7 +1872,9 @@ impl TermWindow {
     }
 
     pub fn config_was_reloaded(&mut self) {
-        self.config_was_reloaded_impl(true);
+        let show_toast = self.show_reload_toast_on_next_config_reload;
+        self.show_reload_toast_on_next_config_reload = false;
+        self.config_was_reloaded_impl(show_toast);
     }
 
     fn config_was_reloaded_silently(&mut self) {
@@ -2959,9 +2965,10 @@ impl TermWindow {
             CloseCurrentPane { confirm } => self.close_current_pane(*confirm),
             Nop | DisableDefaultAssignment => {}
             ReloadConfiguration => {
+                self.show_reload_toast_on_next_config_reload = true;
                 config::reload();
                 crate::frontend::refresh_fast_config_snapshot();
-                // Toast is shown by config_was_reloaded() callback
+                // Toast (if any) is decided in config_was_reloaded() callback.
             }
             MoveTab(n) => self.move_tab(*n)?,
             MoveTabRelative(n) => self.move_tab_relative(*n)?,
