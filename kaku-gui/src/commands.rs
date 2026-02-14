@@ -2018,6 +2018,14 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
                 RotationDirection::CounterClockwise => "md_rotate_left",
             }),
         },
+        TogglePaneSplitDirection => CommandDef {
+            brief: "Toggle Split Direction".into(),
+            doc: "Toggle the split direction between horizontal and vertical".into(),
+            keys: vec![],
+            args: &[ArgType::ActivePane],
+            menubar: &["Window"],
+            icon: Some("cod_split_vertical"),
+        },
         SplitPane(split) => {
             let direction = split.direction;
             CommandDef {
@@ -2136,6 +2144,7 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         }),
         RotatePanes(RotationDirection::Clockwise),
         RotatePanes(RotationDirection::CounterClockwise),
+        TogglePaneSplitDirection,
         ActivateTab(0),
         ActivateTab(1),
         ActivateTab(2),

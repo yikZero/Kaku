@@ -606,6 +606,10 @@ impl Tab {
         self.inner.lock().rotate_clockwise()
     }
 
+    pub fn toggle_pane_split_direction(&self) {
+        self.inner.lock().toggle_pane_split_direction()
+    }
+
     pub fn iter_splits(&self) -> Vec<PositionedSplit> {
         self.inner.lock().iter_splits()
     }
@@ -1039,6 +1043,104 @@ impl TabInner {
             }
         }
         Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
+    }
+
+    // 切换 active pane 所属 split 节点的方向 (H↔V)
+    fn toggle_pane_split_direction(&mut self) {
+        if self.zoomed.is_some() {
+            return;
+        }
+
+        let active_pane = match self.get_active_pane() {
+            Some(p) => p,
+            None => return,
+        };
+        let active_pane_id = active_pane.pane_id();
+
+        let mut cursor = self.pane.take().unwrap().cursor();
+
+        // 定位到 active pane 所在的 leaf
+        loop {
+            if cursor.is_leaf() {
+                if cursor.leaf_mut().unwrap().pane_id() == active_pane_id {
+                    break;
+                }
+            }
+            match cursor.preorder_next() {
+                Ok(c) => cursor = c,
+                Err(c) => {
+                    // 没找到 active pane（不应该发生）
+                    self.pane.replace(c.tree());
+                    return;
+                }
+            }
+        }
+
+        // 上移到父 split 节点（单 pane 时 go_up 返回 Err）
+        cursor = match cursor.go_up() {
+            Ok(c) => c,
+            Err(c) => {
+                self.pane.replace(c.tree());
+                return;
+            }
+        };
+
+        // 翻转方向并重算尺寸
+        let cell_dims = self.cell_dimensions();
+        if let Ok(Some(node)) = cursor.node_mut() {
+            let total_cols = node.width();
+            let total_rows = node.height();
+
+            match node.direction {
+                SplitDirection::Horizontal => {
+                    // H→V: 左右 → 上下
+                    let gutter = split_row_gutter();
+                    // 最小尺寸保护: 两侧至少各 1 行 + gutter
+                    if total_rows < gutter + 2 {
+                        // 空间不够，不翻转
+                    } else {
+                        node.direction = SplitDirection::Vertical;
+                        let half_rows = total_rows.saturating_sub(gutter) / 2;
+                        let remainder = total_rows.saturating_sub(gutter) - half_rows;
+
+                        node.first.cols = total_cols;
+                        node.first.rows = half_rows;
+                        node.first.pixel_width = total_cols * cell_dims.pixel_width;
+                        node.first.pixel_height = half_rows * cell_dims.pixel_height;
+
+                        node.second.cols = total_cols;
+                        node.second.rows = remainder;
+                        node.second.pixel_width = total_cols * cell_dims.pixel_width;
+                        node.second.pixel_height = remainder * cell_dims.pixel_height;
+                    }
+                }
+                SplitDirection::Vertical => {
+                    // V→H: 上下 → 左右
+                    let gutter = split_col_gutter();
+                    // 最小尺寸保护: 两侧至少各 1 列 + gutter
+                    if total_cols < gutter + 2 {
+                        // 空间不够，不翻转
+                    } else {
+                        node.direction = SplitDirection::Horizontal;
+                        let half_cols = total_cols.saturating_sub(gutter) / 2;
+                        let remainder = total_cols.saturating_sub(gutter) - half_cols;
+
+                        node.first.cols = half_cols;
+                        node.first.rows = total_rows;
+                        node.first.pixel_width = half_cols * cell_dims.pixel_width;
+                        node.first.pixel_height = total_rows * cell_dims.pixel_height;
+
+                        node.second.cols = remainder;
+                        node.second.rows = total_rows;
+                        node.second.pixel_width = remainder * cell_dims.pixel_width;
+                        node.second.pixel_height = total_rows * cell_dims.pixel_height;
+                    }
+                }
+            }
+        }
+
+        // 用 cascade_size_from_cursor 级联，正确重算嵌套子 split 尺寸
+        self.cascade_size_from_cursor(cursor);
     }
 
     fn iter_panes_impl(&mut self, respect_zoom_state: bool) -> Vec<PositionedPane> {

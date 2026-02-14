@@ -3345,6 +3345,14 @@ impl TermWindow {
                     RotationDirection::CounterClockwise => tab.rotate_counter_clockwise(),
                 }
             }
+            TogglePaneSplitDirection => {
+                let mux = Mux::get();
+                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+                    Some(tab) => tab,
+                    None => return Ok(PerformAssignmentResult::Handled),
+                };
+                tab.toggle_pane_split_direction();
+            }
             SplitPane(split) => {
                 log::trace!("SplitPane {:?}", split);
                 self.spawn_command(
