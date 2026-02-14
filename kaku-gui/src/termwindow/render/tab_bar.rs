@@ -51,6 +51,32 @@ impl crate::TermWindow {
                 self.config.text_background_opacity
             });
 
+        if window_is_transparent {
+            let tab_bar_bg = if let Some(active) = self.get_active_pane_or_overlay() {
+                active
+                    .palette()
+                    .background
+                    .to_linear()
+                    .mul_alpha(self.config.window_background_opacity)
+            } else {
+                palette
+                    .background
+                    .to_linear()
+                    .mul_alpha(self.config.window_background_opacity)
+            };
+            self.filled_rectangle(
+                layers,
+                0,
+                euclid::rect(
+                    0.0,
+                    tab_bar_y,
+                    self.dimensions.pixel_width as f32,
+                    tab_bar_height,
+                ),
+                tab_bar_bg,
+            )?;
+        }
+
         self.render_screen_line(
             RenderScreenLineParams {
                 top_pixel_y: tab_bar_y,

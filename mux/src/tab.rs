@@ -1620,45 +1620,33 @@ impl TabInner {
             )
         }
 
+        let col_gutter = split_col_gutter();
+        let row_gutter = split_row_gutter();
+
         for pane in &panes {
-            let score = match direction {
+            let is_candidate = match direction {
                 PaneDirection::Right => {
-                    if pane.left == active.left + active.width + 1
+                    pane.left == active.left + active.width + col_gutter
                         && edge_intersects(active.top, active.height, pane.top, pane.height)
-                    {
-                        1 + recency.score(pane.index)
-                    } else {
-                        0
-                    }
                 }
                 PaneDirection::Left => {
-                    if pane.left + pane.width + 1 == active.left
+                    pane.left + pane.width + col_gutter == active.left
                         && edge_intersects(active.top, active.height, pane.top, pane.height)
-                    {
-                        1 + recency.score(pane.index)
-                    } else {
-                        0
-                    }
                 }
                 PaneDirection::Up => {
-                    if pane.top + pane.height + 1 == active.top
+                    pane.top + pane.height + row_gutter == active.top
                         && edge_intersects(active.left, active.width, pane.left, pane.width)
-                    {
-                        1 + recency.score(pane.index)
-                    } else {
-                        0
-                    }
                 }
                 PaneDirection::Down => {
-                    if active.top + active.height + 1 == pane.top
+                    active.top + active.height + row_gutter == pane.top
                         && edge_intersects(active.left, active.width, pane.left, pane.width)
-                    {
-                        1 + recency.score(pane.index)
-                    } else {
-                        0
-                    }
                 }
                 PaneDirection::Next | PaneDirection::Prev => unreachable!(),
+            };
+            let score = if is_candidate {
+                1 + recency.score(pane.index)
+            } else {
+                0
             };
 
             if score > 0 {

@@ -119,7 +119,7 @@ end
 -- config.default_prog = { '/bin/zsh', '-l' }
 --
 -- 5) Cursor and scrollback
--- config.default_cursor_style = 'SteadyBar'
+-- config.default_cursor_style = 'BlinkingBar'
 -- config.scrollback_lines = 20000
 --
 -- 6) Add or override a key binding

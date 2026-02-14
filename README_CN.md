@@ -99,6 +99,10 @@ WezTerm 强大且可扩展，我非常感谢它的引擎。但我想要一个开
 
    暂时没有，Kaku 目前仅支持 macOS，我们会先专注于完善 Mac 上体验，等成熟后可能会推出 Windows 版本给大伙
 
+3. **Kaku 支持 macOS 透明窗口吗？**
+
+   支持。你可以在 `~/.config/kaku/kaku.lua` 里配置 `window_background_opacity`，并按需设置 `macos_window_background_blur`。透明模式下顶部、右侧和底部留白区域会保持一致，避免出现透明空洞。
+
 ## 支持
 
 - 如果 Kaku 对你有帮助，给仓库点个 Star 或 [分享给朋友](https://twitter.com/intent/tweet?url=https://github.com/tw93/Kaku&text=Kaku%20-%20A%20fast%20terminal%20built%20for%20AI%20coding.)。

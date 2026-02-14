@@ -19,8 +19,23 @@ app:
 	PROFILE=debug ./scripts/build.sh --app-only
 
 dev:
-	cargo build $(BUILD_OPTS) -p kaku-gui
-	RUST_LOG=$(RUST_LOG) ./target/debug/kaku-gui
+	@if ! command -v cargo-watch >/dev/null 2>&1; then \
+		echo "Installing cargo-watch..."; \
+		cargo install cargo-watch --locked; \
+	fi
+	RUST_LOG=$(RUST_LOG) cargo watch \
+		--skip-local-deps \
+		-w Cargo.toml \
+		-w kaku-gui \
+		-w window \
+		-w term \
+		-w mux \
+		-w config \
+		-w kaku \
+		-w lua-api-crates \
+		-i "dist/**" \
+		-i "deps/**" \
+		-x "run $(BUILD_OPTS) -p kaku-gui --"
 
 build:
 	cargo build $(BUILD_OPTS) -p kaku -p kaku-gui -p wezterm-mux-server-impl
@@ -34,5 +49,6 @@ fmt-check:
 
 install-tools:
 	cargo install cargo-nextest --locked
+	cargo install cargo-watch --locked
 	rustup toolchain install nightly --component rustfmt
 	@echo "Tools installed."

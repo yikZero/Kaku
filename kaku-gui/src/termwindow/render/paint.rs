@@ -1,10 +1,14 @@
-use crate::termwindow::{RenderFrame, TermWindowNotif};
+use crate::termwindow::box_model::*;
+use crate::termwindow::{DimensionContext, RenderFrame, TermWindowNotif};
+use crate::utilsprites::RenderMetrics;
 use ::window::bitmaps::atlas::OutOfTextureSpace;
 use ::window::WindowOps;
 use anyhow::Context;
+use config::Dimension;
 use smol::Timer;
 use std::time::{Duration, Instant};
 use wezterm_font::ClearShapeCache;
+use window::color::LinearRgba;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllowImage {
@@ -169,22 +173,8 @@ impl crate::TermWindow {
             }
         }
 
-        // Check if we're in a zoom animation - if so, skip content rendering
-        // This prevents font flickering during maximize/restore transitions.
-        // The screen will show only the background color during animation.
-        let in_zoom_animation = self
-            .window
-            .as_ref()
-            .map_or(false, |w| w.is_zoom_animation_active());
-
         // Clear out UI item positions; we'll rebuild these as we render
         self.ui_items.clear();
-
-        if in_zoom_animation {
-            // During zoom animation, just render the background and return
-            // to avoid rendering text with incorrect scaling
-            return self.paint_background_only();
-        }
 
         let panes = self.get_panes_to_render();
         let focused = self.focused.is_some();
@@ -228,9 +218,100 @@ impl crate::TermWindow {
                 }
             }
             _ if window_is_transparent => {
-                // Avoid doubling up the background color: the panes
-                // will render out through the padding so there
-                // should be no gaps that need filling in
+                // Avoid doubling up the background color for the main pane area.
+                // We still need to paint strips that are intentionally excluded
+                // from pane background quads.
+                let strip_background = if panes.len() == 1 {
+                    panes[0].pane.palette().background
+                } else {
+                    self.palette().background
+                }
+                .to_linear()
+                .mul_alpha(self.config.window_background_opacity);
+                let border = self.get_os_border();
+                let tab_bar_height = if self.show_tab_bar {
+                    self.tab_bar_pixel_height().context("tab_bar_pixel_height")?
+                } else {
+                    0.0
+                };
+                let padding_bottom = self
+                    .config
+                    .window_padding
+                    .bottom
+                    .evaluate_as_pixels(DimensionContext {
+                        dpi: self.dimensions.dpi as f32,
+                        pixel_max: self.terminal_size.pixel_height as f32,
+                        pixel_cell: self.render_metrics.cell_size.height as f32,
+                    });
+                let top_fill_height = border.top.get() as f32
+                    + if self.config.tab_bar_at_bottom {
+                        0.0
+                    } else {
+                        tab_bar_height
+                    };
+                let bottom_fill_height = padding_bottom + border.bottom.get() as f32;
+                let bottom_reserved_for_right_strip = bottom_fill_height
+                    + if self.config.tab_bar_at_bottom {
+                        tab_bar_height
+                    } else {
+                        0.0
+                    };
+                let right_fill_width =
+                    self.effective_right_padding(&self.config) as f32 + border.right.get() as f32;
+                let window_width = self.dimensions.pixel_width as f32;
+                let window_height = self.dimensions.pixel_height as f32;
+
+                if top_fill_height > 0.0 {
+                    self.filled_rectangle(
+                        &mut layers,
+                        0,
+                        euclid::rect(
+                            0.0,
+                            0.0,
+                            window_width,
+                            top_fill_height.min(window_height),
+                        ),
+                        strip_background,
+                    )
+                    .context("filled_rectangle for transparent top strip")?;
+                }
+
+                if bottom_fill_height > 0.0 {
+                    let clamped_height = bottom_fill_height.min(window_height);
+                    self.filled_rectangle(
+                        &mut layers,
+                        0,
+                        euclid::rect(
+                            0.0,
+                            (window_height - clamped_height).max(0.0),
+                            window_width,
+                            clamped_height,
+                        ),
+                        strip_background,
+                    )
+                    .context("filled_rectangle for transparent bottom strip")?;
+                }
+
+                if right_fill_width > 0.0 {
+                    let clamped_width = right_fill_width.min(window_width);
+                    let right_fill_y = top_fill_height.min(window_height);
+                    let right_fill_height = (window_height
+                        - right_fill_y
+                        - bottom_reserved_for_right_strip.min(window_height))
+                    .max(0.0);
+                    self.filled_rectangle(
+                        &mut layers,
+                        0,
+                        euclid::rect(
+                            window_width - clamped_width,
+                            right_fill_y,
+                            clamped_width,
+                            right_fill_height,
+                        ),
+                        strip_background,
+                    )
+                    .context("filled_rectangle for transparent right strip")?;
+                }
             }
             _ => {
                 paint_terminal_background = true;
@@ -263,6 +344,31 @@ impl crate::TermWindow {
             .context("filled_rectangle for window background")?;
         }
 
+        let hide_transition_content = self
+            .window
+            .as_ref()
+            .map(|window| window.is_zoom_animation_active())
+            .unwrap_or(false);
+        if hide_transition_content {
+            // During fullscreen transition, keep only a stable background to avoid
+            // one-frame text scale pops.
+            let hide_background = self.palette().background.to_linear();
+            self.filled_rectangle(
+                &mut layers,
+                0,
+                euclid::rect(
+                    0.,
+                    0.,
+                    self.dimensions.pixel_width as f32,
+                    self.dimensions.pixel_height as f32,
+                ),
+                hide_background,
+            )
+            .context("filled_rectangle for fullscreen transition hide")?;
+            drop(layers);
+            return Ok(());
+        }
+
         for pos in panes {
             if pos.is_active {
                 self.update_text_cursor(&pos);
@@ -290,35 +396,99 @@ impl crate::TermWindow {
             .context("paint_window_borders")?;
         drop(layers);
         self.paint_modal().context("paint_modal")?;
+        self.paint_toast().context("paint_toast")?;
 
         Ok(())
     }
 
-    /// Paint only the background during zoom animation to avoid font flickering
-    fn paint_background_only(&mut self) -> anyhow::Result<()> {
-        let bg_color = self.palette().background.to_linear();
-        let window_is_transparent =
-            !self.window_background.is_empty() || self.config.window_background_opacity != 1.0;
+    /// Render the toast notification
+    pub fn paint_toast(&mut self) -> anyhow::Result<()> {
+        let (toast_at, message) = match &self.toast {
+            Some((t, msg)) if t.elapsed() < Duration::from_millis(2500) => (*t, msg.clone()),
+            _ => return Ok(()),
+        };
 
-        if self.window_background.is_empty() || !window_is_transparent {
-            // Use solid terminal background color
-            let gl_state = self.render_state.as_ref().unwrap();
-            let layer = gl_state
-                .layer_for_zindex(0)
-                .context("layer_for_zindex(0)")?;
-            let mut layers = layer.quad_allocator();
+        let font = self.fonts.title_font()?;
+        let metrics = RenderMetrics::with_font_metrics(&font.metrics());
 
-            // Fill the entire window with background color
-            let pixel_width = self.dimensions.pixel_width as f32;
-            let pixel_height = self.dimensions.pixel_height as f32;
+        // Fade out during the last 500ms (after 2000ms)
+        let elapsed_ms = toast_at.elapsed().as_millis() as f32;
+        let alpha = if elapsed_ms > 2000.0 {
+            (1.0 - (elapsed_ms - 2000.0) / 500.0).max(0.0)
+        } else {
+            1.0
+        };
 
-            self.filled_rectangle(
-                &mut layers,
-                0,
-                euclid::rect(0., 0., pixel_width, pixel_height),
-                bg_color,
-            )
-            .context("filled_rectangle for zoom background")?;
+        // Use bright purple (ansi index 13) for toast background
+        let palette = self.palette();
+        let bg_linear = palette.colors.0[13].to_linear();
+        let bg_color = LinearRgba(bg_linear.0, bg_linear.1, bg_linear.2, 0.9 * alpha);
+        // Always use white text for visibility
+        let text_color = LinearRgba(1.0, 1.0, 1.0, alpha);
+
+        let element = Element::new(&font, ElementContent::Text(message.clone()))
+            .colors(ElementColors {
+                border: BorderColor::new(bg_color.into()),
+                bg: bg_color.into(),
+                text: text_color.into(),
+            })
+            .padding(BoxDimension {
+                left: Dimension::Cells(0.75),
+                right: Dimension::Cells(0.75),
+                top: Dimension::Cells(0.25),
+                bottom: Dimension::Cells(0.25),
+            })
+            .border(BoxDimension::new(Dimension::Pixels(1.)))
+            .border_corners(None);
+
+        let dimensions = self.dimensions;
+        let border = self.get_os_border();
+        // Calculate width based on message length (each char ~cell_width + padding)
+        let approx_width = (message.len() as f32 + 1.5) * metrics.cell_size.width as f32;
+        let toast_height = metrics.cell_size.height as f32 * 1.5;
+        // Use consistent margin based on cell size
+        let h_margin = metrics.cell_size.width as f32 * 2.0;
+        let v_margin = metrics.cell_size.height as f32 * 2.0;
+
+        // Position at bottom-right with fixed margin from window edge
+        let right_x =
+            dimensions.pixel_width as f32 - approx_width - h_margin - border.right.get() as f32;
+        let bottom_y =
+            dimensions.pixel_height as f32 - toast_height - v_margin - border.bottom.get() as f32;
+
+        let computed = self.compute_element(
+            &LayoutContext {
+                height: DimensionContext {
+                    dpi: dimensions.dpi as f32,
+                    pixel_max: dimensions.pixel_height as f32,
+                    pixel_cell: metrics.cell_size.height as f32,
+                },
+                width: DimensionContext {
+                    dpi: dimensions.dpi as f32,
+                    pixel_max: dimensions.pixel_width as f32,
+                    pixel_cell: metrics.cell_size.width as f32,
+                },
+                bounds: euclid::rect(right_x, bottom_y, approx_width, toast_height),
+                metrics: &metrics,
+                gl_state: self.render_state.as_ref().unwrap(),
+                zindex: 120,
+            },
+            &element,
+        )?;
+
+        let gl_state = self.render_state.as_ref().unwrap();
+        self.render_element(&computed, gl_state, None)?;
+
+        // Keep redrawing during fade-out
+        if elapsed_ms > 2000.0 {
+            let next = Instant::now() + Duration::from_millis(16);
+            let mut anim = self.has_animation.borrow_mut();
+            match *anim {
+                Some(existing) if existing <= next => {}
+                _ => {
+                    *anim = Some(next);
+                }
+            }
         }
 
         Ok(())

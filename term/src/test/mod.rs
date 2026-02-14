@@ -1429,7 +1429,10 @@ fn test_primary_peek_cleared_on_soft_reset() {
     // Soft Reset
     term.soft_reset();
     // Soft Reset exits alt screen, peek flag should be cleared
-    assert!(!term.is_primary_peek(), "peek should not remain after soft reset");
+    assert!(
+        !term.is_primary_peek(),
+        "peek should not remain after soft reset"
+    );
 
     // Re-entering alt screen should not have residual peek
     term.set_mode("?1049", true);
@@ -1448,7 +1451,10 @@ fn test_primary_peek_not_active_outside_alt_screen() {
 
     // Even if manually setting flag, is_primary_peek returns false
     term.set_primary_peek(true);
-    assert!(!term.is_primary_peek(), "peek should not activate outside alt screen");
+    assert!(
+        !term.is_primary_peek(),
+        "peek should not activate outside alt screen"
+    );
 }
 
 #[test]
@@ -1495,5 +1501,8 @@ fn test_primary_peek_no_leak_across_sessions() {
 
     // Finally confirm no residual
     term.set_mode("?1049", true);
-    assert!(!term.is_primary_peek(), "peek should not remain after multiple rounds");
+    assert!(
+        !term.is_primary_peek(),
+        "peek should not remain after multiple rounds"
+    );
 }

@@ -3,8 +3,10 @@ use crate::TermWindow;
 use config::keyassignment::{ClipboardCopyDestination, ClipboardPasteSource};
 use mux::pane::Pane;
 use mux::Mux;
+use smol::Timer;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use window::{Clipboard, ClipboardData, WindowOps};
 
 impl TermWindow {
@@ -22,6 +24,43 @@ impl TermWindow {
                 self.window.as_ref().unwrap().set_clipboard(c, text.clone());
             }
         }
+    }
+
+    /// Show toast notification with a message (disappears after 2.5 seconds)
+    pub fn show_toast(&mut self, message: String) {
+        let now = Instant::now();
+        self.toast = Some((now, message));
+        if let Some(window) = self.window.clone() {
+            let win = window.clone();
+            // Trigger fade-out after 2000ms
+            let fade_win = win.clone();
+            promise::spawn::spawn(async move {
+                Timer::after(Duration::from_millis(2000)).await;
+                fade_win.invalidate();
+            })
+            .detach();
+            // Clear after 2500ms
+            promise::spawn::spawn(async move {
+                Timer::after(Duration::from_millis(2500)).await;
+                window.notify(TermWindowNotif::Apply(Box::new(move |tw| {
+                    if let Some((toast_time, _)) = &tw.toast {
+                        if *toast_time == now {
+                            tw.toast = None;
+                        }
+                    }
+                    win.invalidate();
+                })));
+            })
+            .detach();
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.invalidate();
+        }
+    }
+
+    /// Show "Copied" toast notification
+    pub fn show_copy_toast(&mut self) {
+        self.show_toast("Copied".to_string());
     }
 
     pub fn paste_from_clipboard(&mut self, pane: &Arc<dyn Pane>, clipboard: ClipboardPasteSource) {
@@ -94,8 +133,28 @@ fn format_dropped_paths(
 ) -> String {
     paths
         .iter()
-        .map(|path| quote_dropped_files.escape(&path.to_string_lossy()))
+        .map(|path| quote_path_for_clipboard_paste(path, quote_dropped_files))
         .collect::<Vec<_>>()
         .join(" ")
         + " "
+}
+
+fn quote_path_for_clipboard_paste(
+    path: &PathBuf,
+    quote_dropped_files: config::DroppedFileQuoting,
+) -> String {
+    let path = path.to_string_lossy();
+    match quote_dropped_files {
+        config::DroppedFileQuoting::None => path.into_owned(),
+        // Clipboard file paste used to be POSIX-quoted before image support was added.
+        // Keep that safety baseline for default SpacesOnly mode.
+        config::DroppedFileQuoting::SpacesOnly | config::DroppedFileQuoting::Posix => {
+            shlex::try_quote(path.as_ref())
+                .unwrap_or_else(|_| "".into())
+                .into_owned()
+        }
+        config::DroppedFileQuoting::Windows | config::DroppedFileQuoting::WindowsAlwaysQuoted => {
+            quote_dropped_files.escape(path.as_ref())
+        }
+    }
 }

@@ -106,5 +106,27 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMessage</key>
+			<string>openInKakuService</string>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Open in Kaku</string>
+			</dict>
+			<key>NSPortName</key>
+			<string>Kaku</string>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>public.folder</string>
+			</array>
+			<key>NSSendTypes</key>
+			<array>
+				<string>NSFilenamesPboardType</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

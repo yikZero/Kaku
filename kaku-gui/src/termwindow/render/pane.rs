@@ -141,15 +141,7 @@ impl crate::TermWindow {
             // Calculate the width - respect right padding
             let width = if pos.left + pos.width >= self.terminal_size.cols as usize {
                 // Right-most pane: extend to split center but respect window padding
-                let padding_right =
-                    self.config
-                        .window_padding
-                        .right
-                        .evaluate_as_pixels(DimensionContext {
-                            dpi: self.dimensions.dpi as f32,
-                            pixel_max: self.terminal_size.pixel_width as f32,
-                            pixel_cell: cell_width,
-                        });
+                let padding_right = self.effective_right_padding(&config) as f32;
                 self.dimensions.pixel_width as f32 - x - padding_right - border.right.get() as f32
             } else {
                 (pos.width as f32 * cell_width) + width_delta
@@ -671,15 +663,7 @@ impl crate::TermWindow {
         // Calculate the width - respect right padding
         let width = if pos.left + pos.width >= self.terminal_size.cols as usize {
             // Right-most pane: extend to split center but respect window padding
-            let padding_right =
-                self.config
-                    .window_padding
-                    .right
-                    .evaluate_as_pixels(DimensionContext {
-                        dpi: self.dimensions.dpi as f32,
-                        pixel_max: self.terminal_size.pixel_width as f32,
-                        pixel_cell: cell_width,
-                    });
+            let padding_right = self.effective_right_padding(&self.config) as f32;
             self.dimensions.pixel_width as f32 - x - padding_right - border.right.get() as f32
         } else {
             (pos.width as f32 * cell_width) + width_delta

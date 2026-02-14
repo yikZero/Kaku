@@ -4,7 +4,7 @@ use crate::os::windows::event::EventHandle;
 use core_foundation::runloop::*;
 use promise::spawn::{Runnable, SpawnFunc};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 #[cfg(all(unix, not(target_os = "macos")))]
 use {
@@ -44,6 +44,19 @@ fn schedule_with_pri(runnable: Runnable, high_pri: bool) {
 }
 
 impl SpawnQueue {
+    fn lock_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
+        match mutex.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                log::error!(
+                    "spawn queue: mutex `{}` poisoned; recovering and continuing",
+                    name
+                );
+                poisoned.into_inner()
+            }
+        }
+    }
+
     pub fn new() -> anyhow::Result<Self> {
         Self::new_impl()
     }
@@ -67,10 +80,12 @@ impl SpawnQueue {
     // in order for the lock to be released before we call the
     // returned function
     fn pop_func(&self) -> Option<SpawnFunc> {
-        if let Some(func) = self.spawned_funcs.lock().unwrap().pop_front() {
+        if let Some(func) = Self::lock_recover(&self.spawned_funcs, "spawned_funcs").pop_front() {
             metrics::histogram!("executor.spawn_delay").record(func.at.elapsed());
             Some(func.func)
-        } else if let Some(func) = self.spawned_funcs_low_pri.lock().unwrap().pop_front() {
+        } else if let Some(func) =
+            Self::lock_recover(&self.spawned_funcs_low_pri, "spawned_funcs_low_pri").pop_front()
+        {
             metrics::histogram!("executor.spawn_delay.low_pri").record(func.at.elapsed());
             Some(func.func)
         } else {
@@ -83,17 +98,17 @@ impl SpawnQueue {
             func: f,
             at: Instant::now(),
         };
-        if high_pri {
-            self.spawned_funcs.lock().unwrap()
+        let mut queue = if high_pri {
+            Self::lock_recover(&self.spawned_funcs, "spawned_funcs")
         } else {
-            self.spawned_funcs_low_pri.lock().unwrap()
-        }
-        .push_back(f);
+            Self::lock_recover(&self.spawned_funcs_low_pri, "spawned_funcs_low_pri")
+        };
+        queue.push_back(f);
     }
 
     fn has_any_queued(&self) -> bool {
-        !self.spawned_funcs.lock().unwrap().is_empty()
-            || !self.spawned_funcs_low_pri.lock().unwrap().is_empty()
+        !Self::lock_recover(&self.spawned_funcs, "spawned_funcs").is_empty()
+            || !Self::lock_recover(&self.spawned_funcs_low_pri, "spawned_funcs_low_pri").is_empty()
     }
 }
 
@@ -152,7 +167,7 @@ impl SpawnQueue {
         use std::io::Write;
 
         self.queue_func(f, high_pri);
-        while let Err(err) = self.write.lock().unwrap().write(b"x") {
+        while let Err(err) = Self::lock_recover(&self.write, "write").write(b"x") {
             if err.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
@@ -178,13 +193,13 @@ impl SpawnQueue {
         // iteration.
         let mut byte = [0u8; 64];
         use std::io::Read;
-        self.read.lock().unwrap().read(&mut byte).ok();
+        Self::lock_recover(&self.read, "read").read(&mut byte).ok();
 
         self.has_any_queued()
     }
 
     pub(crate) fn raw_fd(&self) -> std::os::unix::io::RawFd {
-        self.read.lock().unwrap().as_raw_fd()
+        Self::lock_recover(&self.read, "read").as_raw_fd()
     }
 }
 

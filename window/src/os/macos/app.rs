@@ -3,7 +3,7 @@ use crate::macos::menu::RepresentedItem;
 use crate::macos::{nsstring, nsstring_to_str};
 use crate::menu::{Menu, MenuItem};
 use crate::{ApplicationEvent, Connection};
-use cocoa::appkit::NSApplicationTerminateReply;
+use cocoa::appkit::{NSApp, NSApplicationTerminateReply, NSFilenamesPboardType};
 use cocoa::base::id;
 use cocoa::foundation::NSInteger;
 use config::keyassignment::KeyAssignment;
@@ -92,6 +92,7 @@ extern "C" fn application_will_finish_launching(
 extern "C" fn application_did_finish_launching(this: &mut Object, _sel: Sel, _notif: *mut Object) {
     log::debug!("application_did_finish_launching");
     unsafe {
+        let () = msg_send![NSApp(), setServicesProvider: this as *mut Object];
         (*this).set_ivar("launched", YES);
     }
 }
@@ -182,6 +183,51 @@ extern "C" fn application_open_file(
     NO
 }
 
+fn first_service_path(pasteboard: *mut Object) -> Option<String> {
+    if pasteboard.is_null() {
+        return None;
+    }
+
+    unsafe {
+        let files: id = msg_send![pasteboard, propertyListForType: NSFilenamesPboardType];
+        if files.is_null() {
+            return None;
+        }
+
+        let count: NSInteger = msg_send![files, count];
+        if count < 1 {
+            return None;
+        }
+
+        let file_name: *mut Object = msg_send![files, objectAtIndex: 0];
+        if file_name.is_null() {
+            return None;
+        }
+
+        Some(nsstring_to_str(file_name).to_string())
+    }
+}
+
+extern "C" fn open_in_kaku_service(
+    _self: &mut Object,
+    _sel: Sel,
+    pasteboard: *mut Object,
+    _user_data: *mut Object,
+    _error: *mut Object,
+) {
+    let Some(path) = first_service_path(pasteboard) else {
+        log::warn!("openInKakuService: Finder provided no file paths");
+        return;
+    };
+
+    if let Some(conn) = Connection::get() {
+        log::debug!("openInKakuService {path}");
+        conn.dispatch_app_event(ApplicationEvent::OpenCommandScript(path));
+    } else {
+        log::warn!("openInKakuService: no active connection");
+    }
+}
+
 extern "C" fn application_dock_menu(
     _self: &mut Object,
     _sel: Sel,
@@ -249,6 +295,17 @@ fn get_class() -> &'static Class {
                 sel!(applicationOpenUntitledFile:),
                 application_open_untitled_file
                     as extern "C" fn(&mut Object, Sel, *mut Object) -> BOOL,
+            );
+            cls.add_method(
+                sel!(openInKakuService:userData:error:),
+                open_in_kaku_service
+                    as extern "C" fn(
+                        &mut Object,
+                        Sel,
+                        *mut Object,
+                        *mut Object,
+                        *mut Object,
+                    ),
             );
         }
 

@@ -50,7 +50,7 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use wezterm_font::FontConfiguration;
 use wezterm_input_types::{is_ascii_control, IntegratedTitleButtonStyle, KeyboardLedStatus};
 
@@ -60,6 +60,12 @@ static APP_TERMINATING: AtomicBool = AtomicBool::new(false);
 const NSViewLayerContentsPlacementTopLeft: NSInteger = 11;
 #[allow(non_upper_case_globals)]
 const NSViewLayerContentsRedrawDuringViewResize: NSInteger = 2;
+const FULLSCREEN_ENTER_HIDE_CONTENT_MS: u64 = 30;
+const FULLSCREEN_EXIT_HIDE_CONTENT_MS: u64 = 20;
+const ZOOM_MAXIMIZE_HIDE_CONTENT_MS: u64 = 20;
+const ZOOM_RESTORE_HIDE_CONTENT_MS: u64 = 20;
+const NATIVE_EXIT_HIDE_CONTENT_MS: u64 = 50;
+const NATIVE_EXIT_POST_HIDE_CONTENT_MS: u64 = 20;
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
@@ -535,6 +541,18 @@ fn persist_window_size(window: *mut Object) -> bool {
         return false;
     }
 
+    let content_view: id = unsafe { msg_send![window, contentView] };
+    if !content_view.is_null() {
+        if let Some(window_view) = unsafe { WindowView::get_this(&*content_view) } {
+            if window_view.simple_fullscreen_active.get()
+                || window_view.simple_fullscreen_transition_active.get()
+                || window_view.native_fullscreen_transition_active.get()
+            {
+                return false;
+            }
+        }
+    }
+
     let style_mask = unsafe { NSWindow::styleMask(window) };
     if style_mask.contains(NSWindowStyleMask::NSFullScreenWindowMask) {
         return false;
@@ -676,7 +694,8 @@ impl Window {
                 ime_state: ImeDisposition::None,
                 ime_last_event: None,
                 live_resizing: false,
-                in_fullscreen_transition: false,
+                last_reported_dpi: None,
+                last_reported_window_state: WindowState::default(),
                 ime_text: String::new(),
             }));
 
@@ -693,6 +712,7 @@ impl Window {
                 &window,
                 config.window_decorations,
                 config.integrated_title_button_style,
+                config.native_macos_fullscreen_mode,
             );
 
             // Prevent Cocoa native tabs from being used
@@ -1025,7 +1045,7 @@ impl WindowOps for Window {
     fn get_os_parameters(
         &self,
         config: &ConfigHandle,
-        window_state: WindowState,
+        _window_state: WindowState,
     ) -> anyhow::Result<Option<Parameters>> {
         // We implement this method primarily to provide Notch-avoidance for
         // systems with a notch.
@@ -1036,37 +1056,50 @@ impl WindowOps for Window {
             style_mask.contains(NSWindowStyleMask::NSFullScreenWindowMask)
         };
 
-        let border_dimensions = if window_state.contains(WindowState::FULL_SCREEN)
-            && !native_full_screen
-            && !config.macos_fullscreen_extend_behind_notch
-        {
-            let main_screen = unsafe { NSScreen::mainScreen(nil) };
-            let has_safe_area_insets: BOOL =
-                unsafe { msg_send![main_screen, respondsToSelector: sel!(safeAreaInsets)] };
-            if has_safe_area_insets == YES {
-                #[derive(Debug)]
-                struct NSEdgeInsets {
-                    top: CGFloat,
-                    left: CGFloat,
-                    bottom: CGFloat,
-                    right: CGFloat,
-                }
-                let insets: NSEdgeInsets = unsafe { msg_send![main_screen, safeAreaInsets] };
-                log::trace!("{:?}", insets);
+        // For simple fullscreen, window_state may lag one frame behind the style/frame update.
+        // Track the state in WindowView::simple_fullscreen_active (Cell<bool>) so we can
+        // read it without borrowing the RefCell and avoid borrow conflicts during resize.
+        let simple_full_screen = unsafe {
+            WindowView::get_this(&*self.ns_view)
+                .map(|view| view.simple_fullscreen_active.get())
+                .unwrap_or(false)
+        };
 
+        let should_apply_notch_padding = simple_full_screen
+            && !native_full_screen
+            && !config.macos_fullscreen_extend_behind_notch;
+
+        let border_dimensions = if should_apply_notch_padding {
+            let screen = unsafe {
+                let window_screen: id = msg_send![self.ns_window, screen];
+                if window_screen.is_null() {
+                    NSScreen::mainScreen(nil)
+                } else {
+                    window_screen
+                }
+            };
+
+            if screen.is_null() {
+                None
+            } else if let Some(insets) = get_screen_safe_area_insets(screen) {
+                let screen_frame = unsafe { NSScreen::frame(screen) };
                 let scale = unsafe {
-                    let frame = NSScreen::frame(main_screen);
-                    let backing_frame = NSScreen::convertRectToBacking_(main_screen, frame);
-                    backing_frame.size.height / frame.size.height
+                    let backing_frame = NSScreen::convertRectToBacking_(screen, screen_frame);
+                    backing_frame.size.height / screen_frame.size.height
                 };
 
                 let top = (insets.top.ceil() * scale) as usize;
+                let border_color = config
+                    .resolved_palette
+                    .background
+                    .map(|c| c.to_linear())
+                    .unwrap_or(crate::color::LinearRgba::with_components(0., 0., 0., 1.));
                 Some(Border {
                     top: ULength::new(top),
-                    left: ULength::new(insets.left.ceil() as usize),
-                    right: ULength::new(insets.right.ceil() as usize),
-                    bottom: ULength::new(insets.bottom.ceil() as usize),
-                    color: crate::color::LinearRgba::with_components(0., 0., 0., 1.),
+                    left: ULength::new(0),
+                    right: ULength::new(0),
+                    bottom: ULength::new(0),
+                    color: border_color,
                 })
             } else {
                 None
@@ -1089,22 +1122,31 @@ impl WindowOps for Window {
     fn is_zoom_animation_active(&self) -> bool {
         unsafe {
             if let Some(view) = WindowView::get_this(&*self.ns_view) {
-                // Read animation time directly from view (Cell<u64> doesn't require borrow)
-                let time_ms = view.last_resize_animation_time_ms.get();
-                if time_ms == 0 {
-                    false
-                } else {
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    let elapsed_ms = now_ms.saturating_sub(time_ms);
-                    elapsed_ms < 300 // 300ms = 0.3s
+                if view.native_fullscreen_transition_active.get() {
+                    match view.native_fullscreen_target.get() {
+                        // Enter fullscreen: keep hidden for whole transition to avoid text scale pop.
+                        Some(true) => return true,
+                        // Exit fullscreen: reveal sooner so content comes back faster.
+                        Some(false) => {
+                            if let Some(until) = view.transition_hide_until.get() {
+                                if Instant::now() < until {
+                                    return true;
+                                }
+                                view.transition_hide_until.set(None);
+                            }
+                        }
+                        None => return true,
+                    }
                 }
-            } else {
-                false
+                if let Some(until) = view.transition_hide_until.get() {
+                    if Instant::now() < until {
+                        return true;
+                    }
+                    view.transition_hide_until.set(None);
+                }
             }
         }
+        false
     }
 }
 
@@ -1141,6 +1183,52 @@ fn screen_point_to_cartesian(point: ScreenPoint) -> NSPoint {
 }
 
 impl WindowInner {
+    fn arm_transition_content_hide(&mut self, duration_ms: u64, _reason: &str, sync_now: bool) {
+        if let Some(window_view) = WindowView::get_this(unsafe { &**self.view }) {
+            let now = Instant::now();
+            if let Some(until) = window_view.transition_hide_until.get() {
+                if until > now {
+                    return;
+                }
+            }
+            window_view.transition_hide_until.set(Some(
+                now + Duration::from_millis(duration_ms),
+            ));
+            let window_id = {
+                let mut inner = window_view.inner.borrow_mut();
+                // Bypass frame-throttle so the hide frame is actually painted now.
+                inner.paint_throttled = false;
+                inner.invalidated = true;
+                inner.events.dispatch(WindowEvent::NeedRepaint);
+                inner.window_id
+            };
+            unsafe {
+                let _: () = msg_send![*self.view, setNeedsDisplay: YES];
+                if sync_now {
+                    let _: () = msg_send![*self.window, displayIfNeeded];
+                }
+            }
+
+            promise::spawn::spawn(async move {
+                async_io::Timer::after(Duration::from_millis(duration_ms)).await;
+                Connection::with_window_inner(window_id, move |inner| {
+                    if let Some(window_view) = WindowView::get_this(unsafe { &**inner.view }) {
+                        let mut state = window_view.inner.borrow_mut();
+                        // Ensure the unhide frame is also not swallowed by throttling.
+                        state.paint_throttled = false;
+                        state.invalidated = true;
+                        state.events.dispatch(WindowEvent::NeedRepaint);
+                    }
+                    unsafe {
+                        let _: () = msg_send![*inner.view, setNeedsDisplay: YES];
+                    }
+                    Ok(())
+                });
+            })
+            .detach();
+        }
+    }
+
     fn enable_opengl(&mut self) -> anyhow::Result<Rc<glium::backend::Context>> {
         if let Some(window_view) = WindowView::get_this(unsafe { &**self.view }) {
             window_view.inner.borrow_mut().enable_opengl()
@@ -1165,13 +1253,8 @@ impl WindowInner {
                 &self.window,
                 self.config.window_decorations,
                 self.config.integrated_title_button_style,
+                self.config.native_macos_fullscreen_mode,
             );
-        }
-    }
-
-    fn toggle_native_fullscreen(&mut self) {
-        unsafe {
-            NSWindow::toggleFullScreen_(*self.window, nil);
         }
     }
 
@@ -1180,10 +1263,28 @@ impl WindowInner {
         style_mask.contains(NSWindowStyleMask::NSFullScreenWindowMask)
     }
 
+    fn toggle_native_fullscreen(&mut self) {
+        unsafe {
+            NSWindow::toggleFullScreen_(*self.window, nil);
+        }
+    }
+
     /// If we were in native full screen mode, exit it and return true.
-    /// Otherwise, return false
+    /// Otherwise, return false.
     fn exit_native_fullscreen(&mut self) -> bool {
         if self.is_native_fullscreen() {
+            if let Some(window_view) = WindowView::get_this(unsafe { &**self.view }) {
+                window_view.native_fullscreen_transition_active.set(true);
+                window_view.native_fullscreen_target.set(Some(false));
+                window_view
+                    .native_fullscreen_transition_start
+                    .set(Some(Instant::now()));
+            }
+            self.arm_transition_content_hide(
+                NATIVE_EXIT_HIDE_CONTENT_MS,
+                "native_pre_exit",
+                true,
+            );
             self.toggle_native_fullscreen();
             true
         } else {
@@ -1209,27 +1310,45 @@ impl WindowInner {
         let current_app = unsafe { NSApplication::sharedApplication(nil) };
 
         if let Some(window_view) = WindowView::get_this(unsafe { &**self.view }) {
-            let fullscreen = window_view.inner.borrow_mut().fullscreen.take();
+            let fullscreen = window_view.inner.borrow().fullscreen;
             match fullscreen {
                 Some(saved_rect) => unsafe {
+                    self.arm_transition_content_hide(
+                        FULLSCREEN_EXIT_HIDE_CONTENT_MS,
+                        "simple_fullscreen_exit",
+                        false,
+                    );
+                    window_view.simple_fullscreen_transition_active.set(true);
                     // Restore prior dimensions
-                    // Use NO for display to batch updates, then flush with makeKeyAndOrderFront
                     apply_decorations_to_window(
                         &self.window,
                         self.config.window_decorations,
                         self.config.integrated_title_button_style,
+                        self.config.native_macos_fullscreen_mode,
                     );
-                    self.window.setFrame_display_(saved_rect, NO);
-                    self.window.setOpaque_(NO);
+                    self.window.setFrame_display_(saved_rect, YES);
+                    let clear: id = msg_send![class!(NSColor), clearColor];
+                    let opaque = if self.config.window_background_opacity >= 1.0 {
+                        YES
+                    } else {
+                        NO
+                    };
+                    let _: () = msg_send![*self.window, setOpaque: opaque];
+                    let _: () = msg_send![*self.window, setBackgroundColor: clear];
                     current_app.setPresentationOptions_(
                         NSApplicationPresentationOptions::NSApplicationPresentationDefault,
                     );
-                    // Invalidate to force redraw at new size
-                    if let Some(view) = WindowView::get_this(&**self.view) {
-                        view.inner.borrow_mut().invalidated = true;
-                    }
+                    window_view.inner.borrow_mut().fullscreen.take();
+                    window_view.simple_fullscreen_active.set(false);
+                    window_view.inner.borrow_mut().invalidated = true;
                 },
                 None => unsafe {
+                    self.arm_transition_content_hide(
+                        FULLSCREEN_ENTER_HIDE_CONTENT_MS,
+                        "simple_fullscreen_enter",
+                        false,
+                    );
+                    window_view.simple_fullscreen_transition_active.set(true);
                     // Go full screen
                     let saved_rect = NSWindow::frame(*self.window);
                     window_view
@@ -1237,22 +1356,26 @@ impl WindowInner {
                         .borrow_mut()
                         .fullscreen
                         .replace(saved_rect);
+                    window_view.simple_fullscreen_active.set(true);
 
                     let main_screen = NSScreen::mainScreen(nil);
-                    let screen_rect = NSScreen::frame(main_screen);
+                    let screen_rect = simple_fullscreen_target_rect(
+                        main_screen,
+                        self.config.macos_fullscreen_extend_behind_notch,
+                    );
 
                     self.window.setOpaque_(YES);
+                    let black: id = msg_send![class!(NSColor), blackColor];
+                    let _: () = msg_send![*self.window, setBackgroundColor: black];
                     self.window
                         .setStyleMask_(NSWindowStyleMask::NSBorderlessWindowMask);
-                    self.window.setFrame_display_(screen_rect, NO);
+                    self.window.setHasShadow_(NO);
+                    self.window.setFrame_display_(screen_rect, YES);
                     current_app.setPresentationOptions_(
-                        NSApplicationPresentationOptions:: NSApplicationPresentationAutoHideMenuBar
+                        NSApplicationPresentationOptions::NSApplicationPresentationAutoHideMenuBar
                             | NSApplicationPresentationOptions::NSApplicationPresentationAutoHideDock
                     );
-                    // Invalidate to force redraw at new size
-                    if let Some(view) = WindowView::get_this(&**self.view) {
-                        view.inner.borrow_mut().invalidated = true;
-                    }
+                    window_view.inner.borrow_mut().invalidated = true;
                 },
             }
         }
@@ -1292,21 +1415,31 @@ impl WindowInner {
     }
 
     fn update_titlebar_background(&self) {
-        if !self
+        let should_color_titlebar = self
             .config
             .window_decorations
             .contains(WindowDecorations::MACOS_USE_BACKGROUND_COLOR_AS_TITLEBAR_COLOR)
-        {
+            || self.config.window_background_opacity < 1.0;
+        if !should_color_titlebar {
             return;
         }
 
         // Set the titlebar background to the theme color falling back to black if there is no
         // specified color scheme
-        let color = self
+        let mut color = self
             .config
             .resolved_palette
             .background
-            .unwrap_or(RgbaColor::from(SrgbaTuple(0., 0., 0., 255.)));
+            .unwrap_or(RgbaColor::from(SrgbaTuple(0., 0., 0., 1.0)));
+        if self.config.window_background_opacity < 1.0 {
+            let SrgbaTuple(r, g, b, a) = *color;
+            color = RgbaColor::from(SrgbaTuple(
+                r,
+                g,
+                b,
+                (a * self.config.window_background_opacity).clamp(0.0, 1.0),
+            ));
+        }
 
         unsafe {
             if let Some(titlebar_view_container) = get_titlebar_view_container(&self.window) {
@@ -1359,6 +1492,7 @@ impl WindowInner {
                 &self.window,
                 self.config.window_decorations,
                 self.config.integrated_title_button_style,
+                self.config.native_macos_fullscreen_mode,
             );
 
             self.update_titlebar_background();
@@ -1475,15 +1609,12 @@ impl WindowInner {
 
     fn maximize(&mut self) {
         if !self.is_zoomed() {
+            self.arm_transition_content_hide(
+                ZOOM_MAXIMIZE_HIDE_CONTENT_MS,
+                "zoom_maximize",
+                false,
+            );
             unsafe {
-                // Record zoom time to prevent font flickering during animation
-                if let Some(this) = WindowView::get_this(&**self.view) {
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    this.last_resize_animation_time_ms.set(now_ms);
-                }
                 NSWindow::zoom_(*self.window, nil);
             }
         }
@@ -1491,45 +1622,45 @@ impl WindowInner {
 
     fn restore(&mut self) {
         if self.is_zoomed() {
+            self.arm_transition_content_hide(
+                ZOOM_RESTORE_HIDE_CONTENT_MS,
+                "zoom_restore",
+                false,
+            );
             unsafe {
-                // Record zoom time to prevent font flickering during animation
-                if let Some(this) = WindowView::get_this(&**self.view) {
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    this.last_resize_animation_time_ms.set(now_ms);
-                }
                 NSWindow::zoom_(*self.window, nil);
             }
         }
     }
 
     fn toggle_fullscreen(&mut self) {
-        // Record animation start time to prevent font flickering during fullscreen transition
-        if let Some(this) = WindowView::get_this(unsafe { &**self.view }) {
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            this.last_resize_animation_time_ms.set(now_ms);
+        if self.config.native_macos_fullscreen_mode {
+            if self.exit_simple_fullscreen() {
+                return;
+            }
+            if self.exit_native_fullscreen() {
+                return;
+            }
+            if let Some(window_view) = WindowView::get_this(unsafe { &**self.view }) {
+                window_view.native_fullscreen_transition_active.set(true);
+                window_view.native_fullscreen_target.set(Some(true));
+                window_view
+                    .native_fullscreen_transition_start
+                    .set(Some(Instant::now()));
+            }
+            self.toggle_native_fullscreen();
+            return;
         }
 
-        let native_fullscreen = self.config.native_macos_fullscreen_mode;
-
-        // If they changed their config since going full screen, be sure
-        // to undo whichever fullscreen mode they had active rather than
-        // trying to undo the one they have configured.
-
-        if native_fullscreen {
-            if !self.exit_simple_fullscreen() {
-                self.toggle_native_fullscreen();
-            }
-        } else {
-            if !self.exit_native_fullscreen() {
-                self.toggle_simple_fullscreen();
-            }
+        if self.exit_simple_fullscreen() {
+            return;
         }
+
+        if self.exit_native_fullscreen() {
+            return;
+        }
+
+        self.toggle_simple_fullscreen();
     }
 
     fn set_resize_increments(&self, incr: ResizeIncrement) {
@@ -1578,11 +1709,28 @@ fn apply_decorations_to_window(
     window: &StrongPtr,
     decorations: WindowDecorations,
     integrated_title_button_style: IntegratedTitleButtonStyle,
+    native_macos_fullscreen_mode: bool,
 ) {
     let mask = decoration_to_mask(decorations, integrated_title_button_style);
     let decorations = effective_decorations(decorations, integrated_title_button_style);
     unsafe {
         window.setStyleMask_(mask);
+        let mut behavior = window.collectionBehavior();
+        if native_macos_fullscreen_mode {
+            behavior.remove(
+                appkit::NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
+            );
+            behavior.insert(
+                appkit::NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenPrimary,
+            );
+            window.setCollectionBehavior_(behavior);
+        } else {
+            behavior.remove(
+                appkit::NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenPrimary
+                    | appkit::NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
+            );
+            window.setCollectionBehavior_(behavior);
+        }
 
         let hidden = if decorations.contains(WindowDecorations::TITLE)
             || decorations.contains(WindowDecorations::INTEGRATED_BUTTONS)
@@ -1779,7 +1927,10 @@ struct Inner {
 
     /// Whether we're in live resize
     live_resizing: bool,
-    in_fullscreen_transition: bool,
+    /// Last stable dpi dispatched to the gui layer.
+    last_reported_dpi: Option<usize>,
+    /// Last window state dispatched to the gui layer.
+    last_reported_window_state: WindowState,
 
     ime_text: String,
 }
@@ -2032,12 +2183,47 @@ const VIEW_CLS_NAME: &str = "KakuWindowView";
 const WINDOW_CLS_NAME: &str = "KakuWindow";
 const TITLEBAR_VIEW_NAME: &str = "NSTitlebarContainerView";
 
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+struct NSEdgeInsets {
+    top: CGFloat,
+    left: CGFloat,
+    bottom: CGFloat,
+    right: CGFloat,
+}
+
+fn get_screen_safe_area_insets(screen: id) -> Option<NSEdgeInsets> {
+    let has_safe_area_insets: BOOL =
+        unsafe { msg_send![screen, respondsToSelector: sel!(safeAreaInsets)] };
+    if has_safe_area_insets == YES {
+        let insets: NSEdgeInsets = unsafe { msg_send![screen, safeAreaInsets] };
+        Some(insets)
+    } else {
+        None
+    }
+}
+
+fn simple_fullscreen_target_rect(screen: id, extend_behind_notch: bool) -> NSRect {
+    unsafe {
+        let screen_rect = NSScreen::frame(screen);
+        let _ = extend_behind_notch;
+        screen_rect
+    }
+}
+
 struct WindowView {
     inner: Rc<RefCell<Inner>>,
-    /// Timestamp of last resize animation (zoom/fullscreen) to detect animation state
-    /// (milliseconds since epoch, 0 = none). Stored here instead of Inner to avoid
-    /// RefCell borrow conflicts during rendering.
-    last_resize_animation_time_ms: Cell<u64>,
+    /// Tracks simple fullscreen state without requiring RefCell borrow.
+    simple_fullscreen_active: Cell<bool>,
+    /// Tracks simple fullscreen transition state without requiring RefCell borrow.
+    simple_fullscreen_transition_active: Cell<bool>,
+    /// Keep pane content hidden for a short time during fullscreen transitions.
+    transition_hide_until: Cell<Option<Instant>>,
+    /// Tracks native fullscreen transition state so we can stabilize resize behavior.
+    native_fullscreen_transition_active: Cell<bool>,
+    /// Target fullscreen state while native transition is running.
+    native_fullscreen_target: Cell<Option<bool>>,
+    native_fullscreen_transition_start: Cell<Option<Instant>>,
 }
 
 pub fn superclass(this: &Object) -> &'static Class {
@@ -2102,6 +2288,112 @@ fn key_modifiers(flags: NSEventModifierFlags) -> Modifiers {
     mods
 }
 
+fn is_function_virtual_key(vkey: u16) -> bool {
+    [
+        kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10,
+        kVK_F11, kVK_F12, kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19,
+        kVK_F20,
+    ]
+    .contains(&vkey)
+}
+
+fn is_navigation_virtual_key(vkey: u16) -> bool {
+    [
+        kVK_LeftArrow,
+        kVK_RightArrow,
+        kVK_UpArrow,
+        kVK_DownArrow,
+        kVK_Home,
+        kVK_End,
+        kVK_PageUp,
+        kVK_PageDown,
+        kVK_ForwardDelete,
+        kVK_Help,
+    ]
+    .contains(&vkey)
+}
+
+/// Returns true for virtual key codes that never correspond to macOS menu
+/// shortcuts: arrows, navigation keys (Home/End/PageUp/PageDown/Delete/Help),
+/// and function keys (F1-F20). Safe to intercept in performKeyEquivalent
+/// when Command is held without breaking standard menu items.
+fn is_non_menu_virtual_key(vkey: u16) -> bool {
+    is_navigation_virtual_key(vkey) || is_function_virtual_key(vkey)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_menu_virtual_keys_are_recognized() {
+        let keys = [
+            kVK_LeftArrow,
+            kVK_RightArrow,
+            kVK_UpArrow,
+            kVK_DownArrow,
+            kVK_Home,
+            kVK_End,
+            kVK_PageUp,
+            kVK_PageDown,
+            kVK_ForwardDelete,
+            kVK_Help,
+            kVK_F1,
+            kVK_F2,
+            kVK_F3,
+            kVK_F4,
+            kVK_F5,
+            kVK_F6,
+            kVK_F7,
+            kVK_F8,
+            kVK_F9,
+            kVK_F10,
+            kVK_F11,
+            kVK_F12,
+            kVK_F13,
+            kVK_F14,
+            kVK_F15,
+            kVK_F16,
+            kVK_F17,
+            kVK_F18,
+            kVK_F19,
+            kVK_F20,
+        ];
+
+        for &key in &keys {
+            assert!(
+                is_non_menu_virtual_key(key),
+                "vkey {:#x} must be recognized",
+                key
+            );
+        }
+    }
+
+    #[test]
+    fn menu_or_character_virtual_keys_are_not_recognized() {
+        let keys = [
+            kVK_ANSI_A,
+            kVK_ANSI_Grave,
+            kVK_Tab,
+            kVK_Return,
+            kVK_Escape,
+            kVK_Command,
+            kVK_Option,
+            // JIS Eisu/Kana key positions should not be captured by default.
+            0x66,
+            0x68,
+        ];
+
+        for &key in &keys {
+            assert!(
+                !is_non_menu_virtual_key(key),
+                "vkey {:#x} must not be recognized",
+                key
+            );
+        }
+    }
+}
+
 /// We register our own subclass of NSWindow so that we can override
 /// canBecomeKeyWindow so that our simple fullscreen style can keep
 /// focus once the titlebar has been removed; the default behavior of
@@ -2115,6 +2407,34 @@ fn get_window_class() -> &'static Class {
             YES
         }
 
+        extern "C" fn redirect_toggle_fullscreen(this: &mut Object, _sel: Sel, sender: id) {
+            let content_view: id = unsafe { msg_send![this, contentView] };
+            if !content_view.is_null() {
+                if let Some(window_view) = unsafe { WindowView::get_this(&*content_view) } {
+                    let (window_id, use_native) = {
+                        let inner = window_view.inner.borrow();
+                        (inner.window_id, inner.config.native_macos_fullscreen_mode)
+                    };
+                    if use_native {
+                        unsafe {
+                            let () =
+                                msg_send![super(this, class!(NSWindow)), toggleFullScreen: sender];
+                        }
+                        return;
+                    }
+                    Connection::with_window_inner(window_id, move |inner| {
+                        inner.toggle_fullscreen();
+                        Ok(())
+                    });
+                    return;
+                }
+            }
+
+            unsafe {
+                let () = msg_send![super(this, class!(NSWindow)), toggleFullScreen: sender];
+            }
+        }
+
         unsafe {
             cls.add_method(
                 sel!(canBecomeKeyWindow),
@@ -2123,6 +2443,10 @@ fn get_window_class() -> &'static Class {
             cls.add_method(
                 sel!(canBecomeMainWindow),
                 yes as extern "C" fn(&mut Object, Sel) -> BOOL,
+            );
+            cls.add_method(
+                sel!(toggleFullScreen:),
+                redirect_toggle_fullscreen as extern "C" fn(&mut Object, Sel, id),
             );
         }
 
@@ -2429,8 +2753,12 @@ impl WindowView {
 
         {
             let inner = self.inner.borrow();
-            native_full_screen = inner.config.native_macos_fullscreen_mode;
             is_simple_full_screen = inner.fullscreen.is_some();
+            native_full_screen = inner.window.as_ref().map_or(false, |window| {
+                let window = window.load();
+                let style_mask = unsafe { NSWindow::styleMask(*window) };
+                style_mask.contains(NSWindowStyleMask::NSFullScreenWindowMask)
+            });
         }
 
         if !native_full_screen {
@@ -2578,12 +2906,21 @@ impl WindowView {
     }
 
     extern "C" fn mouse_down(this: &mut Object, _sel: Sel, nsevent: id) {
+        // Check if we're in fullscreen mode - if so, disable dragging
+        let in_fullscreen = if let Some(view) = Self::get_this(this) {
+            view.inner.borrow().fullscreen.is_some()
+        } else {
+            false
+        };
+
         // Clear stale flag to prevent false drag triggers from last abnormal exit
         PENDING_DRAG_MOVE.with(|flag| flag.set(false));
         Self::mouse_common(this, nsevent, MouseEventKind::Press(MousePress::Left));
+
         // Execute drag synchronously: app layer may call request_drag_move() in mouse_common to set flag
+        // But skip if in fullscreen mode
         let pending_drag = PENDING_DRAG_MOVE.with(|flag| flag.replace(false));
-        if pending_drag {
+        if pending_drag && !in_fullscreen {
             unsafe {
                 let window: id = msg_send![this as id, window];
                 if window != nil {
@@ -3069,21 +3406,29 @@ impl WindowView {
         let chars = unsafe { nsstring_to_str(nsevent.characters()) };
         let modifier_flags = unsafe { nsevent.modifierFlags() };
         let modifiers = key_modifiers(modifier_flags);
+        let virtual_key = unsafe { nsevent.keyCode() };
 
         log::trace!(
-            "perform_key_equivalent: chars=`{}` modifiers=`{:?}`",
+            "perform_key_equivalent: chars=`{}` modifiers=`{:?}` virtual_key={:?}",
             chars.escape_debug(),
             modifiers,
+            virtual_key,
         );
 
-        if (chars == "." && modifiers == Modifiers::SUPER)
+        let special_shortcut = (chars == "." && modifiers == Modifiers::SUPER)
             || (chars == "\u{1b}" && modifiers == Modifiers::CTRL)
             || (chars == "\t" && modifiers == Modifiers::CTRL)
-            || (chars == "\x19"/* Shift-Tab: See issue #1902 */)
-        {
+            || (chars == "\x19" /* Shift-Tab: See issue #1902 */);
+
+        let command_non_menu_key =
+            modifiers.contains(Modifiers::SUPER) && is_non_menu_virtual_key(virtual_key);
+
+        if special_shortcut || command_non_menu_key {
             // Synthesize a key down event for this, because macOS will
             // not do that, even though we tell it that we handled this event.
             // <https://github.com/wezterm/wezterm/issues/1867>
+            // Command + non-menu virtual keys are routed here by macOS
+            // and would otherwise be consumed before reaching keyDown:.
             Self::key_common(this, nsevent, true);
 
             // Prevent macOS from calling doCommandBySelector(cancel:)
@@ -3140,72 +3485,139 @@ impl WindowView {
 
     extern "C" fn will_enter_fullscreen(this: &mut Object, _sel: Sel, _notification: id) {
         if let Some(this) = Self::get_this(this) {
-            this.inner.borrow_mut().in_fullscreen_transition = true;
-            // Record animation start time to hide content during native fullscreen transition
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            this.last_resize_animation_time_ms.set(now_ms);
+            this.native_fullscreen_transition_active.set(true);
+            this.native_fullscreen_target.set(Some(true));
+            this.native_fullscreen_transition_start
+                .set(Some(Instant::now()));
+        }
+    }
+
+    extern "C" fn window_should_enter_fullscreen(this: &mut Object, _sel: Sel, _window: id) -> BOOL {
+        if let Some(this) = Self::get_this(this) {
+            let (window_id, use_native) = {
+                let inner = this.inner.borrow();
+                (inner.window_id, inner.config.native_macos_fullscreen_mode)
+            };
+            if use_native {
+                YES
+            } else {
+                Connection::with_window_inner(window_id, move |inner| {
+                    inner.toggle_fullscreen();
+                    Ok(())
+                });
+                NO
+            }
+        } else {
+            YES
         }
     }
 
     extern "C" fn did_enter_fullscreen(this: &mut Object, _sel: Sel, _notification: id) {
-        if let Some(this_ref) = Self::get_this(this) {
-            this_ref.inner.borrow_mut().in_fullscreen_transition = false;
+        if let Some(this) = Self::get_this(this) {
+            this.native_fullscreen_transition_active.set(false);
+            this.native_fullscreen_target.set(None);
         }
         Self::did_resize(this, _sel, _notification);
+        if let Some(this) = Self::get_this(this) {
+            this.native_fullscreen_transition_start.set(None);
+            {
+                let mut inner = this.inner.borrow_mut();
+                inner.paint_throttled = false;
+                inner.invalidated = true;
+                inner.events.dispatch(WindowEvent::NeedRepaint);
+            }
+        }
     }
 
     extern "C" fn will_exit_fullscreen(this: &mut Object, _sel: Sel, _notification: id) {
+        let view_id = this as *mut Object;
         if let Some(this) = Self::get_this(this) {
-            this.inner.borrow_mut().in_fullscreen_transition = true;
-            // Record animation start time to hide content during native fullscreen transition
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            this.last_resize_animation_time_ms.set(now_ms);
+            let now = Instant::now();
+            this.native_fullscreen_transition_active.set(true);
+            this.native_fullscreen_target.set(Some(false));
+            this.native_fullscreen_transition_start.set(Some(now));
+
+            // Native exit can be triggered by multiple entry points.
+            // Arm the same short hide window here so all paths stay consistent.
+            let should_arm_hide = this
+                .transition_hide_until
+                .get()
+                .map(|until| until <= now)
+                .unwrap_or(true);
+            if should_arm_hide {
+                this.transition_hide_until
+                    .set(Some(now + Duration::from_millis(NATIVE_EXIT_HIDE_CONTENT_MS)));
+            }
+
+            if let Ok(mut inner) = this.inner.try_borrow_mut() {
+                inner.paint_throttled = false;
+                inner.invalidated = true;
+                inner.events.dispatch(WindowEvent::NeedRepaint);
+            }
+            unsafe {
+                let _: () = msg_send![view_id, setNeedsDisplay: YES];
+                let ns_window: id = msg_send![view_id, window];
+                if !ns_window.is_null() {
+                    let _: () = msg_send![ns_window, displayIfNeeded];
+                }
+            }
         }
     }
 
     extern "C" fn did_exit_fullscreen(this: &mut Object, _sel: Sel, _notification: id) {
-        if let Some(this_ref) = Self::get_this(this) {
-            this_ref.inner.borrow_mut().in_fullscreen_transition = false;
+        let view_id = this as *mut Object;
+        if let Some(this) = Self::get_this(this) {
+            this.native_fullscreen_transition_active.set(false);
+            this.native_fullscreen_target.set(None);
+            this.transition_hide_until.set(Some(
+                Instant::now() + Duration::from_millis(NATIVE_EXIT_POST_HIDE_CONTENT_MS),
+            ));
         }
         Self::did_resize(this, _sel, _notification);
+        if let Some(this) = Self::get_this(this) {
+            this.native_fullscreen_transition_start.set(None);
+            {
+                if let Ok(mut inner) = this.inner.try_borrow_mut() {
+                    inner.paint_throttled = false;
+                    inner.invalidated = true;
+                    inner.events.dispatch(WindowEvent::NeedRepaint);
+                }
+            }
+            unsafe {
+                let _: () = msg_send![view_id, setNeedsDisplay: YES];
+                let ns_window: id = msg_send![view_id, window];
+                if !ns_window.is_null() {
+                    let _: () = msg_send![ns_window, displayIfNeeded];
+                }
+            }
+        }
     }
 
     extern "C" fn did_end_live_resize(this: &mut Object, _sel: Sel, _notification: id) {
         if let Some(this) = Self::get_this(this) {
-            let mut inner = this.inner.borrow_mut();
-            inner.live_resizing = false;
-            if !APP_TERMINATING.load(Ordering::Relaxed) {
-                if let Some(window) = inner.window.as_ref() {
-                    let window = window.load();
-                    if !window.is_null() {
-                        let _ = persist_window_size(*window);
-                    }
+            let window_to_persist = {
+                let mut inner = this.inner.borrow_mut();
+                inner.live_resizing = false;
+                if APP_TERMINATING.load(Ordering::Relaxed) {
+                    None
+                } else {
+                    inner.window.as_ref().map(|window| window.load())
+                }
+            };
+
+            if let Some(window) = window_to_persist {
+                if !window.is_null() {
+                    let _ = persist_window_size(*window);
                 }
             }
         }
     }
 
     extern "C" fn did_resize(this: &mut Object, _sel: Sel, _notification: id) {
-        // Use try_borrow to avoid panic if already borrowed
-        let in_fullscreen_transition = if let Some(this) = Self::get_this(this) {
-            this.inner
-                .try_borrow()
-                .map_or(false, |inner| inner.in_fullscreen_transition)
-        } else {
-            return;
-        };
-
         if let Some(this) = Self::get_this(this) {
-            if let Ok(inner) = this.inner.try_borrow() {
-                if let Some(gl_context_pair) = inner.gl_context_pair.as_ref() {
-                    gl_context_pair.backend.update();
-                }
+            let inner = this.inner.borrow();
+            if let Some(gl_context_pair) = inner.gl_context_pair.as_ref() {
+                gl_context_pair.backend.update();
             }
         }
 
@@ -3213,11 +3625,9 @@ impl WindowView {
         let backing_frame = unsafe { NSView::convertRectToBacking(this as *mut _, frame) };
         let width = backing_frame.size.width;
         let height = backing_frame.size.height;
+        let mut window_to_persist = None;
         if let Some(this) = Self::get_this(this) {
-            let mut inner = match this.inner.try_borrow_mut() {
-                Ok(inner) => inner,
-                Err(_) => return, // Already borrowed, skip this resize event
-            };
+            let mut inner = this.inner.borrow_mut();
 
             // This is a little gross; ideally we'd call
             // WindowInner:is_fullscreen to determine this, but
@@ -3225,30 +3635,19 @@ impl WindowView {
             // as we can be called in a context where something
             // higher up the callstack already has a mutable
             // reference and we'd panic.
-            let is_full_screen = inner.fullscreen.is_some()
-                || inner.window.as_ref().map_or(false, |window| {
-                    let window = window.load();
-                    let style_mask = unsafe { NSWindow::styleMask(*window) };
-                    style_mask.contains(NSWindowStyleMask::NSFullScreenWindowMask)
-                });
-
-            // During fullscreen or zoom transitions, treat as live resizing to allow
-            // smooth font scaling updates as the window animates, preventing
-            // the text from appearing too large/small during the transition.
-            // Zoom animation typically takes ~0.2s, use 0.3s as buffer.
-            let time_ms = this.last_resize_animation_time_ms.get();
-            let in_zoom_transition = if time_ms == 0 {
-                false
+            let native_transition_active = this.native_fullscreen_transition_active.get();
+            let is_full_screen = if native_transition_active {
+                this.native_fullscreen_target.get().unwrap_or(false)
             } else {
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-                let elapsed_ms = now_ms.saturating_sub(time_ms);
-                elapsed_ms < 300
+                inner.fullscreen.is_some()
+                    || inner.window.as_ref().map_or(false, |window| {
+                        let window = window.load();
+                        let style_mask = unsafe { NSWindow::styleMask(*window) };
+                        style_mask.contains(NSWindowStyleMask::NSFullScreenWindowMask)
+                    })
             };
-            let live_resizing =
-                inner.live_resizing || in_fullscreen_transition || in_zoom_transition;
+
+            let live_resizing = inner.live_resizing;
 
             // Note: isZoomed can falsely return YES in situations such as
             // the current screen changing. We cannot detect that case here.
@@ -3282,33 +3681,105 @@ impl WindowView {
                 _ => WindowState::default(),
             };
 
-            let dpi = inner
+            let fallback_scale = inner
                 .window
                 .as_ref()
                 .and_then(|window| {
                     let window = window.load();
-                    dpi_for_window_screen(*window, &inner.config)
+                    if window.is_null() {
+                        None
+                    } else {
+                        let scale: CGFloat = unsafe { msg_send![*window, backingScaleFactor] };
+                        if scale > 0.0 { Some(scale as f64) } else { None }
+                    }
                 })
-                .unwrap_or(crate::DEFAULT_DPI * (backing_frame.size.width / frame.size.width))
-                as usize;
-
-            inner.events.dispatch(WindowEvent::Resized {
-                dimensions: Dimensions {
-                    pixel_width: width as usize,
-                    pixel_height: height as usize,
-                    dpi,
-                },
-                window_state: screen_state | level_state,
-                live_resizing,
+                .unwrap_or_else(|| {
+                    if frame.size.width > 0.0 {
+                        backing_frame.size.width / frame.size.width
+                    } else {
+                        1.0
+                    }
+                });
+            let fallback_dpi = (crate::DEFAULT_DPI * fallback_scale) as usize;
+            let screen_dpi = inner.window.as_ref().and_then(|window| {
+                let window = window.load();
+                dpi_for_window_screen(*window, &inner.config).map(|dpi| dpi as usize)
             });
+            let simple_transition_active = this.simple_fullscreen_transition_active.get();
+            let transition_active = native_transition_active || simple_transition_active;
+            let dpi = if transition_active {
+                inner
+                    .last_reported_dpi
+                    .or(screen_dpi)
+                    .unwrap_or(fallback_dpi)
+            } else if let Some(dpi) = screen_dpi {
+                dpi
+            } else {
+                fallback_dpi
+            };
+            inner.last_reported_dpi = Some(dpi);
+
+            let window_state = screen_state | level_state;
+            let prior_window_state = inner.last_reported_window_state;
+            let maximized_toggled = prior_window_state.contains(WindowState::MAXIMIZED)
+                != window_state.contains(WindowState::MAXIMIZED);
+            let fullscreen_involved = prior_window_state.contains(WindowState::FULL_SCREEN)
+                || window_state.contains(WindowState::FULL_SCREEN);
+            if maximized_toggled && !fullscreen_involved {
+                let entering_maximized = window_state.contains(WindowState::MAXIMIZED);
+                let hide_ms = if entering_maximized {
+                    ZOOM_MAXIMIZE_HIDE_CONTENT_MS
+                } else {
+                    ZOOM_RESTORE_HIDE_CONTENT_MS
+                };
+                this.transition_hide_until.set(Some(
+                    Instant::now() + Duration::from_millis(hide_ms),
+                ));
+                inner.paint_throttled = false;
+                inner.invalidated = true;
+                inner.events.dispatch(WindowEvent::NeedRepaint);
+            }
+            inner.last_reported_window_state = window_state;
+
+            let suppress_intermediate_resize = if native_transition_active {
+                match this.native_fullscreen_target.get() {
+                    // Enter: keep suppressing until did_enter to avoid showing scaled transition frames.
+                    Some(true) => true,
+                    // Exit: suppress only while hide window is active; then release updates early.
+                    Some(false) => this
+                        .transition_hide_until
+                        .get()
+                        .map(|until| Instant::now() < until)
+                        .unwrap_or(false),
+                    None => true,
+                }
+            } else {
+                false
+            };
+
+            if !suppress_intermediate_resize {
+                inner.events.dispatch(WindowEvent::Resized {
+                    dimensions: Dimensions {
+                        pixel_width: width as usize,
+                        pixel_height: height as usize,
+                        dpi,
+                    },
+                    window_state,
+                    live_resizing,
+                });
+            }
+
+            if simple_transition_active {
+                this.simple_fullscreen_transition_active.set(false);
+            }
 
             if !live_resizing && !APP_TERMINATING.load(Ordering::Relaxed) {
-                if let Some(window) = inner.window.as_ref() {
-                    let window = window.load();
-                    if !window.is_null() {
-                        let _ = persist_window_size(*window);
-                    }
-                }
+                window_to_persist = inner.window.as_ref().map(|window| window.load());
+            }
+        }
+        if let Some(window) = window_to_persist {
+            if !window.is_null() {
+                let _ = persist_window_size(*window);
             }
         }
     }
@@ -3367,12 +3838,15 @@ impl WindowView {
     }
 
     extern "C" fn draw_rect(view: &mut Object, sel: Sel, _dirty_rect: NSRect) {
+        let view_id = view as id;
         if let Some(this) = Self::get_this(view) {
             // Use try_borrow_mut to avoid panic if already borrowed (e.g., during zoom animation)
             let mut inner = match this.inner.try_borrow_mut() {
                 Ok(inner) => inner,
                 Err(_) => {
-                    // Already borrowed, mark as invalidated and return
+                    unsafe {
+                        let _: () = msg_send![view_id, setNeedsDisplay: YES];
+                    }
                     return;
                 }
             };
@@ -3491,7 +3965,12 @@ impl WindowView {
 
         let view = Box::into_raw(Box::new(Self {
             inner: Rc::clone(&inner),
-            last_resize_animation_time_ms: Cell::new(0),
+            simple_fullscreen_active: Cell::new(false),
+            simple_fullscreen_transition_active: Cell::new(false),
+            transition_hide_until: Cell::new(None),
+            native_fullscreen_transition_active: Cell::new(false),
+            native_fullscreen_target: Cell::new(None),
+            native_fullscreen_transition_start: Cell::new(None),
         }));
 
         unsafe {
@@ -3604,6 +4083,10 @@ impl WindowView {
             cls.add_method(
                 sel!(windowWillEnterFullScreen:),
                 Self::will_enter_fullscreen as extern "C" fn(&mut Object, Sel, id),
+            );
+            cls.add_method(
+                sel!(windowShouldEnterFullScreen:),
+                Self::window_should_enter_fullscreen as extern "C" fn(&mut Object, Sel, id) -> BOOL,
             );
             cls.add_method(
                 sel!(windowDidEnterFullScreen:),

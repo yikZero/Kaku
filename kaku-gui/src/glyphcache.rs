@@ -719,14 +719,33 @@ impl GlyphCache {
             brightness_adjust = font.brightness_adjust(info.font_idx);
         }
 
-        let aspect = (idx_metrics.cell_width / idx_metrics.cell_height).get();
+        let font_aspect = (idx_metrics.cell_width / idx_metrics.cell_height).get();
+        let glyph_aspect = if glyph.width > 0 && glyph.height > 0 {
+            glyph.width as f64 / glyph.height as f64
+        } else {
+            0.0
+        };
+        let is_private_use_icon = info
+            .only_char
+            .map(|ch| {
+                let cp = ch as u32;
+                (0xE000..=0xF8FF).contains(&cp)
+                    || (0xF0000..=0xFFFFD).contains(&cp)
+                    || (0x100000..=0x10FFFD).contains(&cp)
+            })
+            .unwrap_or(false);
 
         // 0.7 is used for this as that is ~ the threshold for \u24e9 on a mac,
-        // which is looks squareish and for which it is desirable to allow to
-        // overflow.  0.5 is the typical monospace font aspect ratio.
-        let is_square_or_wide = aspect >= 0.7;
+        // which looks squareish and for which it is desirable to allow to
+        // overflow. 0.5 is the typical monospace font aspect ratio.
+        // Some icon glyphs are wide even when the backing font metrics are
+        // narrow, so consult both font metrics and the rasterized glyph.
+        let is_square_or_wide = font_aspect >= 0.7 || glyph_aspect >= 0.7;
 
-        let allow_width_overflow = if is_square_or_wide {
+        let allow_width_overflow = if is_private_use_icon {
+            self.fonts.config().allow_square_glyphs_to_overflow_width
+                != AllowSquareGlyphOverflow::Never
+        } else if is_square_or_wide {
             match self.fonts.config().allow_square_glyphs_to_overflow_width {
                 AllowSquareGlyphOverflow::Never => false,
                 AllowSquareGlyphOverflow::Always => true,
@@ -802,7 +821,9 @@ impl GlyphCache {
             {
                 log::debug!(
                     "{text} allow_width_overflow={allow_width_overflow} \
-                     is_square_or_wide={is_square_or_wide} aspect={aspect} \
+                     is_square_or_wide={is_square_or_wide} \
+                     is_private_use_icon={is_private_use_icon} \
+                     font_aspect={font_aspect} glyph_aspect={glyph_aspect} \
                      max_pixel_width={max_pixel_width} glyph.width={glyph_width} \
                      -> scale={scale} metrics_only_scale={metrics_only_scale}",
                     text = info.text,
@@ -856,14 +877,15 @@ impl GlyphCache {
 
             let (scale, raw_im) = if scale != 1.0 {
                 log::trace!(
-                    "physically scaling {:?} by {} bcos {}x{} > {:?}x{:?}. aspect={}",
+                    "physically scaling {:?} by {} bcos {}x{} > {:?}x{:?}. font_aspect={} glyph_aspect={}",
                     info,
                     scale,
                     glyph.width,
                     glyph.height,
                     cell_width,
                     cell_height,
-                    aspect,
+                    font_aspect,
+                    glyph_aspect,
                 );
                 (1.0, raw_im.scale_by(scale))
             } else {

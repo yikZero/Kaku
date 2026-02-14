@@ -223,19 +223,23 @@ mod imp {
             };
         }
 
-        if let Some(brew_info) = resolve_brew_info()? {
-            return Ok(UpdateProvider::Brew(brew_info));
-        }
-
         let exe = std::env::current_exe().context("resolve current executable path")?;
+        let mut should_probe_brew = path_is_or_points_to_caskroom(&exe);
+
         if let Some(target) = std::env::var_os("KAKU_UPDATE_TARGET_APP") {
             let target = PathBuf::from(target);
-            if path_contains_caskroom(&exe) || path_contains_caskroom(&target) {
-                if find_brew_binary().is_none() {
-                    bail!(
-                        "Kaku appears to be Homebrew-managed but `brew` was not found in PATH or standard locations"
-                    );
-                }
+            should_probe_brew |= path_is_or_points_to_caskroom(&target);
+        }
+
+        if should_probe_brew {
+            if let Some(brew_info) = resolve_brew_info()? {
+                return Ok(UpdateProvider::Brew(brew_info));
+            }
+
+            if find_brew_binary().is_none() {
+                bail!(
+                    "Kaku appears to be Homebrew-managed but `brew` was not found in PATH or standard locations"
+                );
             }
         }
 
@@ -257,7 +261,9 @@ mod imp {
         // Old cask name "kaku" conflicts with another software in homebrew/cask.
         // Do not use it; prompt user to migrate instead.
         if is_brew_cask_installed(&brew_bin, "kaku")? {
-            println!("WARNING: Detected old Homebrew cask 'kaku' which conflicts with another software.");
+            println!(
+                "WARNING: Detected old Homebrew cask 'kaku' which conflicts with another software."
+            );
             println!("Please migrate to the new cask name manually:");
             println!();
             println!("  brew uninstall --cask kaku");
@@ -291,6 +297,13 @@ mod imp {
             Component::Normal(name) => name == "Caskroom",
             _ => false,
         })
+    }
+
+    fn path_is_or_points_to_caskroom(path: &Path) -> bool {
+        path_contains_caskroom(path)
+            || fs::canonicalize(path)
+                .map(|resolved| path_contains_caskroom(&resolved))
+                .unwrap_or(false)
     }
 
     fn is_brew_cask_installed(brew_bin: &Path, cask_name: &str) -> anyhow::Result<bool> {

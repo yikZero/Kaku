@@ -40,12 +40,59 @@ end
 local fullscreen_uniform_padding = {
   left = '40px',
   right = '40px',
-  top = '70px',
+  top = '0px',
   bottom = '30px',
 }
 
+-- Per-window resize debounce state.
+-- Weak keys ensure closed windows don't leak state.
+local resize_state_by_window = setmetatable({}, { __mode = 'k' })
+
+local function monotonic_now()
+  -- Keep this numeric for debounce arithmetic.
+  return os.clock()
+end
+
+local function dims_hash(dims)
+  return dims.pixel_width .. "x" .. dims.pixel_height
+end
+
 local function update_window_config(window, is_full_screen)
+  local now = monotonic_now()
+  local dims = window:get_dimensions()
+  local current_hash = dims_hash(dims)
+  local state = resize_state_by_window[window]
+  if not state then
+    state = {
+      last_resize_time = 0,
+      last_dims_hash = "",
+    }
+    resize_state_by_window[window] = state
+  end
   local overrides = window:get_config_overrides() or {}
+  local needs_update = false
+
+  if is_full_screen then
+    needs_update = (not padding_matches(overrides.window_padding, fullscreen_uniform_padding))
+      or overrides.hide_tab_bar_if_only_one_tab ~= false
+  else
+    needs_update = overrides.window_padding ~= nil or overrides.hide_tab_bar_if_only_one_tab ~= nil
+  end
+
+  -- Skip update if dimensions changed rapidly (within 1 second) and state is stable
+  -- This prevents padding flicker during fullscreen animation
+  if current_hash ~= state.last_dims_hash then
+    local time_since_last = now - state.last_resize_time
+    if time_since_last < 1.0 and not needs_update then
+      -- Rapid change detected, skip this update
+      state.last_dims_hash = current_hash
+      state.last_resize_time = now
+      return
+    end
+    state.last_dims_hash = current_hash
+    state.last_resize_time = now
+  end
+
   if is_full_screen then
     if not padding_matches(overrides.window_padding, fullscreen_uniform_padding) or overrides.hide_tab_bar_if_only_one_tab ~= false then
       overrides.window_padding = fullscreen_uniform_padding
@@ -185,6 +232,11 @@ config.allow_square_glyphs_to_overflow_width = 'Always'
 config.custom_block_glyphs = true
 config.unicode_version = 14
 
+local _, in_app_bundle = wezterm.executable_dir:gsub('MacOS/?$', 'Resources')
+if in_app_bundle > 0 then
+  config.term = 'kaku'
+end
+
 -- ===== Cursor =====
 config.default_cursor_style = 'BlinkingBar'
 config.cursor_thickness = '2px'
@@ -215,6 +267,8 @@ config.window_frame = {
 }
 
 config.window_close_confirmation = 'NeverPrompt'
+config.window_background_opacity = 1.0
+config.text_background_opacity = 1.0
 
 -- ===== Tab Bar =====
 config.enable_tab_bar = true
@@ -225,8 +279,8 @@ config.hide_tab_bar_if_only_one_tab = true
 config.show_tab_index_in_tab_bar = true
 config.show_new_tab_button_in_tab_bar = false
 
--- Color scheme for tabs
-config.colors = {
+-- ===== Color Scheme =====
+local kaku_theme = {
   -- Background
   foreground = '#edecee',
   background = '#15141b',
@@ -270,6 +324,7 @@ config.colors = {
   -- Tab bar colors
   tab_bar = {
     background = '#15141b',
+    inactive_tab_edge = '#15141b',
 
     active_tab = {
       bg_color = '#29263c',
@@ -303,6 +358,12 @@ config.colors = {
     },
   },
 }
+
+config.color_schemes = config.color_schemes or {}
+config.color_schemes['Kaku Theme'] = kaku_theme
+if not config.color_scheme then
+  config.color_scheme = 'Kaku Theme'
+end
 
 -- ===== Shell =====
 local user_shell = os.getenv('SHELL')

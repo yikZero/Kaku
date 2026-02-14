@@ -2,6 +2,8 @@ use crate::termwindow::{PaneInformation, TabInformation, UIItem, UIItemType};
 use config::{ConfigHandle, TabBarColors};
 use finl_unicode::grapheme_clusters::Graphemes;
 use mlua::FromLua;
+use mux::{pane::CachePolicy, Mux};
+use std::path::Path;
 use termwiz::cell::{unicode_column_width, Cell, CellAttributes};
 use termwiz::color::{AnsiColor, ColorSpec};
 use termwiz::escape::csi::Sgr;
@@ -138,77 +140,235 @@ fn compute_tab_title(
     hover: bool,
     tab_max_width: usize,
 ) -> TitleText {
+    if let Some(pane) = &tab.active_pane {
+        if tab.tab_title.is_empty() {
+            if let Some(ssh_host) = ssh_destination_for_pane(pane) {
+                return build_default_title(tab, config, &ssh_host, false, true);
+            }
+        }
+    }
+
     let title = call_format_tab_title(tab, tab_info, pane_info, config, hover, tab_max_width);
 
     match title {
         Some(title) => title,
         None => {
-            let mut items = vec![];
-            let mut len = 0;
-
             if let Some(pane) = &tab.active_pane {
-                let mut title = if tab.tab_title.is_empty() {
+                let title = if tab.tab_title.is_empty() {
                     pane.title.clone()
                 } else {
                     tab.tab_title.clone()
                 };
-
-                let classic_spacing = if config.use_fancy_tab_bar { "" } else { " " };
-                if config.show_tab_index_in_tab_bar {
-                    let index = format!(
-                        "{classic_spacing}{}: ",
-                        tab.tab_index
-                            + if config.tab_and_split_indices_are_zero_based {
-                                0
-                            } else {
-                                1
-                            }
-                    );
-                    len += unicode_column_width(&index, None);
-                    items.push(FormatItem::Text(index));
-
-                    title = format!("{}{classic_spacing}", title);
-                }
-
-                match pane.progress {
-                    Progress::None => {}
-                    Progress::Percentage(pct) | Progress::Error(pct) => {
-                        let graphic = format!("{} ", pct_to_glyph(pct));
-                        len += unicode_column_width(&graphic, None);
-                        let color = if matches!(pane.progress, Progress::Percentage(_)) {
-                            FormatItem::Foreground(FormatColor::AnsiColor(AnsiColor::Green))
-                        } else {
-                            FormatItem::Foreground(FormatColor::AnsiColor(AnsiColor::Red))
-                        };
-                        items.push(color);
-                        items.push(FormatItem::Text(graphic));
-                        items.push(FormatItem::Foreground(FormatColor::Default));
-                    }
-                    Progress::Indeterminate => {
-                        // TODO: Decide what to do here to indicate this
-                    }
-                }
-
-                // We have a preferred soft minimum on tab width to make it
-                // easier to click on tab titles, but we'll still go below
-                // this if there are too many tabs to fit the window at
-                // this width.
-                if !config.use_fancy_tab_bar {
-                    while len + unicode_column_width(&title, None) < 5 {
-                        title.push(' ');
-                    }
-                }
-
-                len += unicode_column_width(&title, None);
-                items.push(FormatItem::Text(title));
+                build_default_title(tab, config, &title, true, false)
             } else {
-                let title = " no pane ".to_string();
-                len += unicode_column_width(&title, None);
-                items.push(FormatItem::Text(title));
-            };
-
-            TitleText { len, items }
+                TitleText {
+                    len: unicode_column_width(" no pane ", None),
+                    items: vec![FormatItem::Text(" no pane ".to_string())],
+                }
+            }
         }
+    }
+}
+
+fn build_default_title(
+    tab: &TabInformation,
+    config: &ConfigHandle,
+    title: &str,
+    with_tab_index: bool,
+    with_edge_padding: bool,
+) -> TitleText {
+    let mut items = vec![];
+    let mut len = 0;
+    let mut title = title.to_string();
+
+    let classic_spacing = if config.use_fancy_tab_bar { "" } else { " " };
+    if with_tab_index && config.show_tab_index_in_tab_bar {
+        let index = format!(
+            "{classic_spacing}{}: ",
+            tab.tab_index
+                + if config.tab_and_split_indices_are_zero_based {
+                    0
+                } else {
+                    1
+                }
+        );
+        len += unicode_column_width(&index, None);
+        items.push(FormatItem::Text(index));
+        title = format!("{}{classic_spacing}", title);
+    }
+
+    if let Some(pane) = &tab.active_pane {
+        match pane.progress {
+            Progress::None => {}
+            Progress::Percentage(pct) | Progress::Error(pct) => {
+                let graphic = format!("{} ", pct_to_glyph(pct));
+                len += unicode_column_width(&graphic, None);
+                let color = if matches!(pane.progress, Progress::Percentage(_)) {
+                    FormatItem::Foreground(FormatColor::AnsiColor(AnsiColor::Green))
+                } else {
+                    FormatItem::Foreground(FormatColor::AnsiColor(AnsiColor::Red))
+                };
+                items.push(color);
+                items.push(FormatItem::Text(graphic));
+                items.push(FormatItem::Foreground(FormatColor::Default));
+            }
+            Progress::Indeterminate => {
+                // TODO: Decide what to do here to indicate this
+            }
+        }
+    }
+
+    if with_edge_padding {
+        title = format!(" {} ", title);
+    } else if !config.use_fancy_tab_bar {
+        while len + unicode_column_width(&title, None) < 5 {
+            title.push(' ');
+        }
+    }
+
+    len += unicode_column_width(&title, None);
+    items.push(FormatItem::Text(title));
+
+    TitleText { len, items }
+}
+
+fn ssh_destination_for_pane(pane: &PaneInformation) -> Option<String> {
+    if let Some(command) = pane.user_vars.get("WEZTERM_PROG") {
+        if let Some(host) = ssh_target_from_command(command) {
+            return Some(host);
+        }
+    }
+
+    let mux = Mux::try_get()?;
+    let real_pane = mux.get_pane(pane.pane_id)?;
+
+    if let Some(domain) = mux.get_domain(real_pane.domain_id()) {
+        let name = domain.domain_name();
+        if let Some(host) = name
+            .strip_prefix("SSH:")
+            .or_else(|| name.strip_prefix("SSHMUX:"))
+        {
+            return Some(host.to_string());
+        }
+    }
+
+    let fg = real_pane.get_foreground_process_name(CachePolicy::AllowStale)?;
+    if command_basename(&fg) != "ssh" {
+        return None;
+    }
+
+    if let Some(info) = real_pane.get_foreground_process_info(CachePolicy::AllowStale) {
+        if let Some(host) = ssh_target_from_tokens(&info.argv) {
+            return Some(host);
+        }
+    }
+
+    real_pane
+        .get_current_working_dir(CachePolicy::AllowStale)
+        .and_then(|cwd| cwd.host_str().map(ToString::to_string))
+}
+
+fn ssh_target_from_command(command: &str) -> Option<String> {
+    let tokens = shlex::split(command).unwrap_or_else(|| {
+        command
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect()
+    });
+
+    ssh_target_from_tokens(&tokens)
+}
+
+fn ssh_target_from_tokens(tokens: &[String]) -> Option<String> {
+    if tokens.is_empty() || command_basename(&tokens[0]) != "ssh" {
+        return None;
+    }
+
+    let mut expect_value = false;
+    for token in tokens.iter().skip(1) {
+        if expect_value {
+            expect_value = false;
+            continue;
+        }
+        if token == "--" {
+            return None;
+        }
+        if token.starts_with('-') {
+            expect_value = ssh_option_needs_value(token);
+            continue;
+        }
+        return normalize_ssh_target(token);
+    }
+    None
+}
+
+fn ssh_option_needs_value(token: &str) -> bool {
+    if token.len() != 2 || !token.starts_with('-') {
+        return false;
+    }
+    matches!(
+        token.chars().nth(1),
+        Some(
+            'B'
+                | 'b'
+                | 'c'
+                | 'D'
+                | 'E'
+                | 'e'
+                | 'F'
+                | 'I'
+                | 'i'
+                | 'J'
+                | 'L'
+                | 'l'
+                | 'm'
+                | 'O'
+                | 'o'
+                | 'p'
+                | 'Q'
+                | 'R'
+                | 'S'
+                | 'W'
+                | 'w'
+        )
+    )
+}
+
+fn command_basename(command: &str) -> &str {
+    Path::new(command)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(command)
+}
+
+fn normalize_ssh_target(target: &str) -> Option<String> {
+    let mut host = target.trim();
+    if host.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = host.rsplit_once('@').map(|(_, rhs)| rhs) {
+        host = rest;
+    }
+
+    if let Some(without_open) = host.strip_prefix('[') {
+        if let Some(end) = without_open.find(']') {
+            return Some(without_open[..end].to_string());
+        }
+    }
+
+    if host.matches(':').count() == 1 {
+        if let Some((h, port)) = host.rsplit_once(':') {
+            if !h.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
+                host = h;
+            }
+        }
+    }
+
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
     }
 }
 
@@ -732,4 +892,30 @@ pub fn parse_status_text(text: &str, default_cell: CellAttributes) -> Line {
     });
     flush_print(&mut print_buffer, &mut cells, &pen);
     Line::from_cells(cells, SEQ_ZERO)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn parse_plain_ssh_target() {
+        assert_eq!(
+            ssh_target_from_command("ssh root@10.0.0.8").as_deref(),
+            Some("10.0.0.8")
+        );
+    }
+
+    #[test]
+    fn parse_ssh_target_with_options() {
+        assert_eq!(
+            ssh_target_from_command("ssh -p 2222 -i ~/.ssh/id user@build-host").as_deref(),
+            Some("build-host")
+        );
+    }
+
+    #[test]
+    fn ignore_non_ssh_command() {
+        assert!(ssh_target_from_command("ls -la").is_none());
+    }
 }

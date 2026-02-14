@@ -6,13 +6,16 @@ use cocoa::foundation::NSArray;
 use objc::*;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PNG_PASTEBOARD_TYPE: &str = "public.png";
 const TIFF_PASTEBOARD_TYPE: &str = "public.tiff";
 const MAX_CLIPBOARD_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const CLIPBOARD_IMAGE_DIR: &str = "clipboard-images";
+const CLIPBOARD_IMAGE_FILE_PREFIX: &str = "clipboard-image-";
+const MAX_CLIPBOARD_IMAGE_FILES: usize = 128;
+const CLIPBOARD_IMAGE_RETENTION_SECS: u64 = 24 * 60 * 60;
 
 pub struct Clipboard {
     pasteboard: id,
@@ -63,11 +66,17 @@ impl Clipboard {
     ) -> anyhow::Result<PathBuf> {
         let dir = config::RUNTIME_DIR.join(CLIPBOARD_IMAGE_DIR);
         config::create_user_owned_dirs(&dir)?;
+        if let Err(err) = self.cleanup_runtime_image_dir(&dir) {
+            log::warn!(
+                "failed to prune clipboard image cache at {}: {err:#}",
+                dir.display()
+            );
+        }
 
         let pid = std::process::id();
         for attempt in 0..64u32 {
             let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-            let file_name = format!("clipboard-image-{pid}-{now}-{attempt}.{extension}");
+            let file_name = format!("{CLIPBOARD_IMAGE_FILE_PREFIX}{pid}-{now}-{attempt}.{extension}");
             let path = dir.join(file_name);
 
             let mut options = std::fs::OpenOptions::new();
@@ -87,6 +96,85 @@ impl Clipboard {
         }
 
         anyhow::bail!("failed to allocate unique clipboard image path")
+    }
+
+    fn cleanup_runtime_image_dir(&self, dir: &Path) -> anyhow::Result<()> {
+        let retention = Duration::from_secs(CLIPBOARD_IMAGE_RETENTION_SECS);
+        let now = SystemTime::now();
+        let mut retained = Vec::new();
+
+        for entry in std::fs::read_dir(dir)? {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    log::warn!(
+                        "failed to list clipboard image cache entry in {}: {err:#}",
+                        dir.display()
+                    );
+                    continue;
+                }
+            };
+
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !file_name.starts_with(CLIPBOARD_IMAGE_FILE_PREFIX) {
+                continue;
+            }
+
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(err) => {
+                    log::warn!(
+                        "failed to read metadata for clipboard image {}: {err:#}",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
+            let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+            let expired = now
+                .duration_since(modified)
+                .map(|elapsed| elapsed > retention)
+                .unwrap_or(false);
+            if expired {
+                if let Err(err) = std::fs::remove_file(&path) {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        log::warn!(
+                            "failed to remove expired clipboard image {}: {err:#}",
+                            path.display()
+                        );
+                    }
+                }
+                continue;
+            }
+
+            retained.push((modified, path));
+        }
+
+        if retained.len() <= MAX_CLIPBOARD_IMAGE_FILES {
+            return Ok(());
+        }
+
+        retained.sort_by_key(|(modified, _)| *modified);
+        let remove_count = retained.len().saturating_sub(MAX_CLIPBOARD_IMAGE_FILES);
+        for (_, path) in retained.into_iter().take(remove_count) {
+            if let Err(err) = std::fs::remove_file(&path) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    log::warn!(
+                        "failed to trim clipboard image cache file {}: {err:#}",
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn read_data(&self) -> anyhow::Result<ClipboardData> {

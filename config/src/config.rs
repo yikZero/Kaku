@@ -32,7 +32,7 @@ use luahelper::impl_lua_conversion_dynamic;
 use mlua::FromLua;
 use portable_pty::CommandBuilder;
 use std::collections::HashMap;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -1640,6 +1640,15 @@ impl Config {
         #[cfg(unix)]
         cmd.umask(umask::UmaskSaver::saved_umask());
         cmd.env("TERM", &self.term);
+        if self.term == "kaku" {
+            if let Some(terminfo_dir) = bundled_terminfo_dir() {
+                if let Some(terminfo_dirs) =
+                    merged_terminfo_dirs(std::env::var_os("TERMINFO_DIRS"), &terminfo_dir)
+                {
+                    cmd.env("TERMINFO_DIRS", terminfo_dirs);
+                }
+            }
+        }
         cmd.env("COLORTERM", "truecolor");
         // TERM_PROGRAM and TERM_PROGRAM_VERSION are an emerging
         // de-facto standard for identifying the terminal.
@@ -1774,7 +1783,40 @@ fn default_harfbuzz_features() -> Vec<String> {
 }
 
 fn default_term() -> String {
-    "xterm-256color".into()
+    if bundled_terminfo_dir().is_some() {
+        "kaku".into()
+    } else {
+        "xterm-256color".into()
+    }
+}
+
+fn bundled_terminfo_dir() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+
+    if let Ok(exe_name) = std::env::current_exe() {
+        if let Some(contents_dir) = exe_name.parent().and_then(|p| p.parent()) {
+            let terminfo_dir = contents_dir.join("Resources").join("terminfo");
+            if terminfo_dir.is_dir() {
+                return Some(terminfo_dir);
+            }
+        }
+    }
+
+    None
+}
+
+fn merged_terminfo_dirs(existing: Option<OsString>, first: &Path) -> Option<OsString> {
+    let mut paths = vec![first.to_path_buf()];
+    if let Some(existing) = existing {
+        for path in std::env::split_paths(&existing) {
+            if path != first {
+                paths.push(path);
+            }
+        }
+    }
+    std::env::join_paths(paths).ok()
 }
 
 fn default_font_size() -> f64 {

@@ -582,6 +582,12 @@ pub struct TermWindow {
     gl: Option<Rc<glium::backend::Context>>,
     webgpu: Option<Rc<WebGpuState>>,
     config_subscription: Option<config::ConfigSubscription>,
+    /// Set when the user explicitly invokes ReloadConfiguration.
+    /// The next config-reload callback consumes this flag and may show toast.
+    show_reload_toast_on_next_config_reload: bool,
+
+    /// Toast notification: (start_time, message)
+    toast: Option<(Instant, String)>,
 }
 
 impl TermWindow {
@@ -914,6 +920,8 @@ impl TermWindow {
             key_table_state: KeyTableState::default(),
             modal: RefCell::new(None),
             opengl_info: None,
+            show_reload_toast_on_next_config_reload: false,
+            toast: None,
         };
 
         let tw = Rc::new(RefCell::new(myself));
@@ -1057,7 +1065,7 @@ impl TermWindow {
                 // be nasty for folks with a lot of windows.
                 // <https://github.com/wezterm/wezterm/issues/2295>
                 config::reload();
-                self.config_was_reloaded();
+                self.config_was_reloaded_silently();
                 Ok(true)
             }
             WindowEvent::PerformKeyAssignment(action) => {
@@ -1323,7 +1331,9 @@ impl TermWindow {
             TermWindowNotif::SetConfigOverrides(value) => {
                 if value != self.config_overrides {
                     self.config_overrides = value;
-                    self.config_was_reloaded();
+                    // Overrides are often updated by runtime hooks (eg: resize/fullscreen),
+                    // so keep this reload silent to avoid noisy toast spam.
+                    self.config_was_reloaded_silently();
                 }
             }
             TermWindowNotif::CancelOverlayForPane(pane_id) => {
@@ -1862,6 +1872,16 @@ impl TermWindow {
     }
 
     pub fn config_was_reloaded(&mut self) {
+        let show_toast = self.show_reload_toast_on_next_config_reload;
+        self.show_reload_toast_on_next_config_reload = false;
+        self.config_was_reloaded_impl(show_toast);
+    }
+
+    fn config_was_reloaded_silently(&mut self) {
+        self.config_was_reloaded_impl(false);
+    }
+
+    fn config_was_reloaded_impl(&mut self, show_toast: bool) {
         log::debug!(
             "config was reloaded, overrides: {:?}",
             self.config_overrides
@@ -1977,6 +1997,11 @@ impl TermWindow {
 
         self.invalidate_modal();
         self.emit_window_event("window-config-reloaded", None);
+
+        if show_toast {
+            // Show toast notification for explicit config reload.
+            self.show_toast("Config reloaded".to_string());
+        }
     }
 
     fn invalidate_modal(&mut self) {
@@ -2940,12 +2965,10 @@ impl TermWindow {
             CloseCurrentPane { confirm } => self.close_current_pane(*confirm),
             Nop | DisableDefaultAssignment => {}
             ReloadConfiguration => {
+                self.show_reload_toast_on_next_config_reload = true;
                 config::reload();
                 crate::frontend::refresh_fast_config_snapshot();
-                wezterm_toast_notification::persistent_toast_notification(
-                    "Kaku",
-                    "Configuration reloaded",
-                );
+                // Toast (if any) is decided in config_was_reloaded() callback.
             }
             MoveTab(n) => self.move_tab(*n)?,
             MoveTabRelative(n) => self.move_tab_relative(*n)?,
@@ -3018,6 +3041,24 @@ impl TermWindow {
                     pane.writer().write_all(b"kaku\n")?;
                 } else if name == "open-kaku-config" {
                     crate::frontend::open_kaku_config();
+                } else if name == crate::frontend::SET_DEFAULT_TERMINAL_EVENT {
+                    match Connection::get() {
+                        Some(conn) => match conn.set_default_terminal() {
+                            Ok(()) => {
+                                self.show_toast("Kaku is now the default terminal".to_string());
+                            }
+                            Err(err) => {
+                                log::error!("Failed to set Kaku as default terminal: {err:#}");
+                                self.show_toast("Failed to set default terminal".to_string());
+                            }
+                        },
+                        None => {
+                            log::error!(
+                                "Cannot set default terminal because no GUI connection is available"
+                            );
+                            self.show_toast("Failed to set default terminal".to_string());
+                        }
+                    }
                 } else {
                     self.emit_window_event(name, None);
                 }
@@ -3026,8 +3067,7 @@ impl TermWindow {
                 let text = self.selection_text(pane);
                 if !text.is_empty() {
                     self.copy_to_clipboard(*dest, text);
-                    let window = self.window.as_ref().unwrap();
-                    window.invalidate();
+                    self.show_copy_toast();
                 } else {
                     self.do_open_link_at_mouse_cursor(pane);
                 }
@@ -3036,8 +3076,7 @@ impl TermWindow {
                 let text = self.selection_text(pane);
                 if !text.is_empty() {
                     self.copy_to_clipboard(*dest, text);
-                    let window = self.window.as_ref().unwrap();
-                    window.invalidate();
+                    self.show_copy_toast();
                 }
             }
             ClearScrollback(erase_mode) => {
