@@ -247,11 +247,7 @@ pub enum FreeTypeLoadTarget {
 
 impl Default for FreeTypeLoadTarget {
     fn default() -> Self {
-        if cfg!(target_os = "macos") {
-            Self::Light
-        } else {
-            Self::Normal
-        }
+        Self::Normal
     }
 }
 
