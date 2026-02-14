@@ -2269,6 +2269,20 @@ fn key_modifiers(flags: NSEventModifierFlags) -> Modifiers {
     mods
 }
 
+/// Returns true for virtual key codes that never correspond to macOS menu
+/// shortcuts: arrows, navigation keys (Home/End/PageUp/PageDown/Delete/Help),
+/// and function keys (F1-F20). Safe to intercept in performKeyEquivalent:
+/// when Command is held without breaking standard menu items.
+fn is_non_menu_virtual_key(vkey: u16) -> bool {
+    // 0x60..=0x7E covers F1-F16, arrows, and navigation keys.
+    // F17-F20 are the remaining non-character function keys.
+    (0x60..=0x7E).contains(&vkey)
+        || vkey == kVK_F17
+        || vkey == kVK_F18
+        || vkey == kVK_F19
+        || vkey == kVK_F20
+}
+
 /// We register our own subclass of NSWindow so that we can override
 /// canBecomeKeyWindow so that our simple fullscreen style can keep
 /// focus once the titlebar has been removed; the default behavior of
@@ -3281,21 +3295,29 @@ impl WindowView {
         let chars = unsafe { nsstring_to_str(nsevent.characters()) };
         let modifier_flags = unsafe { nsevent.modifierFlags() };
         let modifiers = key_modifiers(modifier_flags);
+        let virtual_key = unsafe { nsevent.keyCode() };
 
         log::trace!(
-            "perform_key_equivalent: chars=`{}` modifiers=`{:?}`",
+            "perform_key_equivalent: chars=`{}` modifiers=`{:?}` virtual_key={:?}",
             chars.escape_debug(),
             modifiers,
+            virtual_key,
         );
 
-        if (chars == "." && modifiers == Modifiers::SUPER)
+        let special_shortcut = (chars == "." && modifiers == Modifiers::SUPER)
             || (chars == "\u{1b}" && modifiers == Modifiers::CTRL)
             || (chars == "\t" && modifiers == Modifiers::CTRL)
-            || (chars == "\x19"/* Shift-Tab: See issue #1902 */)
-        {
+            || (chars == "\x19" /* Shift-Tab: See issue #1902 */);
+
+        let command_non_menu_key =
+            modifiers.contains(Modifiers::SUPER) && is_non_menu_virtual_key(virtual_key);
+
+        if special_shortcut || command_non_menu_key {
             // Synthesize a key down event for this, because macOS will
             // not do that, even though we tell it that we handled this event.
             // <https://github.com/wezterm/wezterm/issues/1867>
+            // Command + non-menu virtual keys are routed here by macOS
+            // and would otherwise be consumed before reaching keyDown:.
             Self::key_common(this, nsevent, true);
 
             // Prevent macOS from calling doCommandBySelector(cancel:)
