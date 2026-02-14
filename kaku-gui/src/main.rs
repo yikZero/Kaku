@@ -704,6 +704,17 @@ fn run_terminal_gui(opts: StartCommand, default_domain_name: Option<String>) -> 
 }
 
 fn fatal_toast_notification(title: &str, message: &str) {
+    let should_show = if cfg!(debug_assertions) {
+        std::env::var_os("KAKU_DEV_FATAL_TOAST").is_some()
+    } else {
+        true
+    };
+
+    if !should_show {
+        log::error!("suppressed fatal toast in debug build: {} - {}", title, message);
+        return;
+    }
+
     persistent_toast_notification(title, message);
     // We need a short delay otherwise the notification
     // will not show
