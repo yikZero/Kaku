@@ -1889,6 +1889,9 @@ impl TermWindow {
     }
 
     fn config_was_reloaded_silently(&mut self) {
+        if self.live_resizing {
+            return;
+        }
         self.config_was_reloaded_impl(false);
     }
 

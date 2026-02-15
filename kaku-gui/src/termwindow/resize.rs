@@ -77,7 +77,9 @@ impl super::TermWindow {
         if let Some(modal) = self.get_modal() {
             modal.reconfigure(self);
         }
-        self.emit_window_event("window-resized", None);
+        if !live_resizing {
+            self.emit_window_event("window-resized", None);
+        }
     }
 
     pub fn apply_pending_scale_changes(&mut self) {
