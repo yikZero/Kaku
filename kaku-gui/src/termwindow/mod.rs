@@ -579,6 +579,9 @@ pub struct TermWindow {
 
     connection_name: String,
 
+    /// Tracks whether we are currently in a live resize operation
+    live_resizing: bool,
+
     gl: Option<Rc<glium::backend::Context>>,
     webgpu: Option<Rc<WebGpuState>>,
     config_subscription: Option<config::ConfigSubscription>,
@@ -922,6 +925,7 @@ impl TermWindow {
             opengl_info: None,
             show_reload_toast_on_next_config_reload: false,
             toast: None,
+            live_resizing: false,
         };
 
         let tw = Rc::new(RefCell::new(myself));
@@ -1872,6 +1876,13 @@ impl TermWindow {
     }
 
     pub fn config_was_reloaded(&mut self) {
+        // Skip config reload during live resizing to avoid performance issues
+        // when dragging the window. The reload will be processed after resize completes.
+        if self.live_resizing {
+            log::trace!("Skipping config reload during live resizing");
+            return;
+        }
+
         let show_toast = self.show_reload_toast_on_next_config_reload;
         self.show_reload_toast_on_next_config_reload = false;
         self.config_was_reloaded_impl(show_toast);

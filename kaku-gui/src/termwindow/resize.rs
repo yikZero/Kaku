@@ -49,6 +49,7 @@ impl super::TermWindow {
         }
         let last_state = self.window_state;
         self.window_state = window_state;
+        self.live_resizing = live_resizing;
         self.quad_generation += 1;
         // Refresh per-screen OS parameters (eg: safe-area/border metrics)
         // on each resize so dragging between monitors doesn't use stale values.
