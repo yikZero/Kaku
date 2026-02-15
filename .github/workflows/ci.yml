@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   fmt:
-    name: Format Check
+    name: Format
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -23,8 +23,11 @@ jobs:
         with:
           components: rustfmt
 
+      - name: Run formatter
+        run: make fmt
+
       - name: Check formatting
-        run: cargo +nightly fmt -p kaku -p kaku-gui -p mux -p wezterm-term -p termwiz -p config -p wezterm-font -- --check
+        run: make fmt-check
 
   test:
     name: Unit Tests
