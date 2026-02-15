@@ -883,7 +883,10 @@ fn resolve_gui_executable(exe_name: &str) -> anyhow::Result<PathBuf> {
     if let Ok(resolved_exe) = std::fs::canonicalize(&current_exe) {
         if let Some(parent) = resolved_exe.parent() {
             let resolved_candidate = parent.join(exe_name);
-            if !candidates.iter().any(|candidate| candidate == &resolved_candidate) {
+            if !candidates
+                .iter()
+                .any(|candidate| candidate == &resolved_candidate)
+            {
                 candidates.push(resolved_candidate);
             }
         }
