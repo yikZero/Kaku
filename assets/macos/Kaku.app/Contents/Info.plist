@@ -15,13 +15,13 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.3.0</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>MacOSX</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>0.3.0</string>
 	<key>CFBundleIconFile</key>
 	<string>terminal.icns</string>
 	<key>LSApplicationCategoryType</key>
@@ -106,27 +106,48 @@
 			</array>
 		</dict>
 	</array>
-	<key>NSServices</key>
-	<array>
-		<dict>
-			<key>NSMessage</key>
-			<string>openInKakuService</string>
-			<key>NSMenuItem</key>
+		<key>NSServices</key>
+		<array>
 			<dict>
-				<key>default</key>
-				<string>Open in Kaku</string>
+				<key>NSMessage</key>
+				<string>openInKakuService</string>
+				<key>NSMenuItem</key>
+				<dict>
+					<key>default</key>
+					<string>New Kaku Tab Here</string>
+				</dict>
+				<key>NSPortName</key>
+				<string>Kaku</string>
+				<key>NSSendFileTypes</key>
+				<array>
+					<string>public.folder</string>
+				</array>
+				<key>NSSendTypes</key>
+				<array>
+					<string>NSFilenamesPboardType</string>
+					<string>public.plain-text</string>
+				</array>
 			</dict>
-			<key>NSPortName</key>
-			<string>Kaku</string>
-			<key>NSSendFileTypes</key>
-			<array>
-				<string>public.folder</string>
-			</array>
-			<key>NSSendTypes</key>
-			<array>
-				<string>NSFilenamesPboardType</string>
-			</array>
-		</dict>
-	</array>
-</dict>
+			<dict>
+				<key>NSMessage</key>
+				<string>openInKakuWindowService</string>
+				<key>NSMenuItem</key>
+				<dict>
+					<key>default</key>
+					<string>New Kaku Window Here</string>
+				</dict>
+				<key>NSPortName</key>
+				<string>Kaku</string>
+				<key>NSSendFileTypes</key>
+				<array>
+					<string>public.folder</string>
+				</array>
+				<key>NSSendTypes</key>
+				<array>
+					<string>NSFilenamesPboardType</string>
+					<string>public.plain-text</string>
+				</array>
+			</dict>
+		</array>
+	</dict>
 </plist>

@@ -23,6 +23,8 @@ pub fn shutdown() {
 pub enum ApplicationEvent {
     /// The system wants to open a command in the terminal
     OpenCommandScript(String),
+    /// The system wants to open a command in a new tab when possible
+    OpenCommandScriptInTab(String),
     PerformKeyAssignment(KeyAssignment),
 }
 

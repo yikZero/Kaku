@@ -3,7 +3,7 @@ use crate::macos::menu::RepresentedItem;
 use crate::macos::{nsstring, nsstring_to_str};
 use crate::menu::{Menu, MenuItem};
 use crate::{ApplicationEvent, Connection};
-use cocoa::appkit::{NSApp, NSApplicationTerminateReply, NSFilenamesPboardType};
+use cocoa::appkit::{NSApp, NSApplicationTerminateReply, NSFilenamesPboardType, NSStringPboardType};
 use cocoa::base::id;
 use cocoa::foundation::NSInteger;
 use config::keyassignment::KeyAssignment;
@@ -14,6 +14,7 @@ use objc::runtime::{Class, Object, Sel, BOOL, NO, YES};
 use objc::*;
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
+use url::Url;
 
 const CLS_NAME: &str = "KakuAppDelegate";
 
@@ -228,21 +229,35 @@ fn first_service_path(pasteboard: *mut Object) -> Option<String> {
 
     unsafe {
         let files: id = msg_send![pasteboard, propertyListForType: NSFilenamesPboardType];
-        if files.is_null() {
+        if !files.is_null() {
+            let count: NSInteger = msg_send![files, count];
+            if count > 0 {
+                let file_name: *mut Object = msg_send![files, objectAtIndex: 0];
+                if !file_name.is_null() {
+                    return Some(nsstring_to_str(file_name).to_string());
+                }
+            }
+        }
+
+        let text: *mut Object = msg_send![pasteboard, stringForType: NSStringPboardType];
+        if text.is_null() {
             return None;
         }
 
-        let count: NSInteger = msg_send![files, count];
-        if count < 1 {
+        let raw = nsstring_to_str(text).trim().to_string();
+        if raw.is_empty() {
             return None;
         }
 
-        let file_name: *mut Object = msg_send![files, objectAtIndex: 0];
-        if file_name.is_null() {
-            return None;
+        if let Ok(url) = Url::parse(&raw) {
+            if url.scheme() == "file" {
+                if let Ok(path) = url.to_file_path() {
+                    return Some(path.to_string_lossy().into_owned());
+                }
+            }
         }
 
-        Some(nsstring_to_str(file_name).to_string())
+        Some(raw)
     }
 }
 
@@ -254,15 +269,35 @@ extern "C" fn open_in_kaku_service(
     _error: *mut Object,
 ) {
     let Some(path) = first_service_path(pasteboard) else {
-        log::warn!("openInKakuService: Finder provided no file paths");
+        log::warn!("openInKakuService: Finder provided no usable paths");
         return;
     };
 
     if let Some(conn) = Connection::get() {
         log::debug!("openInKakuService {path}");
-        conn.dispatch_app_event(ApplicationEvent::OpenCommandScript(path));
+        conn.dispatch_app_event(ApplicationEvent::OpenCommandScriptInTab(path));
     } else {
         log::warn!("openInKakuService: no active connection");
+    }
+}
+
+extern "C" fn open_in_kaku_window_service(
+    _self: &mut Object,
+    _sel: Sel,
+    pasteboard: *mut Object,
+    _user_data: *mut Object,
+    _error: *mut Object,
+) {
+    let Some(path) = first_service_path(pasteboard) else {
+        log::warn!("openInKakuWindowService: Finder provided no usable paths");
+        return;
+    };
+
+    if let Some(conn) = Connection::get() {
+        log::debug!("openInKakuWindowService {path}");
+        conn.dispatch_app_event(ApplicationEvent::OpenCommandScript(path));
+    } else {
+        log::warn!("openInKakuWindowService: no active connection");
     }
 }
 
@@ -341,6 +376,11 @@ fn get_class() -> &'static Class {
             cls.add_method(
                 sel!(openInKakuService:userData:error:),
                 open_in_kaku_service
+                    as extern "C" fn(&mut Object, Sel, *mut Object, *mut Object, *mut Object),
+            );
+            cls.add_method(
+                sel!(openInKakuWindowService:userData:error:),
+                open_in_kaku_window_service
                     as extern "C" fn(&mut Object, Sel, *mut Object, *mut Object, *mut Object),
             );
         }

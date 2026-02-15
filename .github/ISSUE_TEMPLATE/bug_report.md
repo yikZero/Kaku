@@ -50,7 +50,7 @@ Please open **Help → Show Debug Overlay** in the menu bar and paste the header
 
 ```text
 Paste the header lines here, e.g.:
-Kaku version: 0.1.1 aarch64-apple-darwin
+Kaku version: 0.3.0 aarch64-apple-darwin
 Window Environment: ...
 Lua Version: Lua 5.4
 OpenGL: ...

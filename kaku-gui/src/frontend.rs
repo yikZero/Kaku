@@ -352,76 +352,86 @@ impl GuiFrontEnd {
         Ok(front_end)
     }
 
+    fn spawn_open_command_script(file_name: String, prefer_existing_window: bool) {
+        let is_directory = Path::new(&file_name).is_dir();
+        let quoted_file_name = if is_directory {
+            None
+        } else {
+            match shlex::try_quote(&file_name) {
+                Ok(name) => Some(name.into_owned()),
+                Err(_) => {
+                    log::error!(
+                        "OpenCommandScript: {file_name} has embedded NUL bytes and
+                         cannot be launched via the shell"
+                    );
+                    return;
+                }
+            }
+        };
+
+        promise::spawn::spawn(async move {
+            use config::keyassignment::SpawnTabDomain;
+            use wezterm_term::TerminalSize;
+
+            // We send the script to execute to the shell on stdin, rather than ask the
+            // shell to execute it directly, so that we start the shell and read in the
+            // user's rc files before running the script.  Without this, wezterm on macOS
+            // is launched with a default and very anemic path, and that is frustrating for
+            // users.
+
+            let mux = Mux::get();
+            let workspace = mux.active_workspace();
+            let window_id = if prefer_existing_window {
+                let mut windows = mux.iter_windows_in_workspace(&workspace);
+                windows.pop()
+            } else {
+                None
+            };
+            let pane_id = None;
+            let cmd = None;
+            let cwd = if is_directory {
+                Some(file_name.clone())
+            } else {
+                None
+            };
+
+            match mux
+                .spawn_tab_or_window(
+                    window_id,
+                    SpawnTabDomain::DomainName("local".to_string()),
+                    cmd,
+                    cwd,
+                    TerminalSize::default(),
+                    pane_id,
+                    workspace,
+                    None, // optional position
+                )
+                .await
+            {
+                Ok((_tab, pane, _window_id)) => {
+                    if let Some(quoted_file_name) = quoted_file_name {
+                        log::trace!("Spawned {file_name} as pane_id {}", pane.pane_id());
+                        let mut writer = pane.writer();
+                        write!(writer, "{quoted_file_name} ; exit\n").ok();
+                    } else {
+                        log::trace!("Spawned pane_id {} with cwd={file_name}", pane.pane_id());
+                    }
+                }
+                Err(err) => {
+                    log::error!("Failed to spawn {file_name}: {err:#?}");
+                }
+            };
+        })
+        .detach();
+    }
+
     fn app_event_handler(event: ApplicationEvent) {
         match event {
             ApplicationEvent::OpenCommandScript(file_name) => {
-                let is_directory = Path::new(&file_name).is_dir();
-                let quoted_file_name = if is_directory {
-                    None
-                } else {
-                    match shlex::try_quote(&file_name) {
-                        Ok(name) => Some(name.into_owned()),
-                        Err(_) => {
-                            log::error!(
-                                "OpenCommandScript: {file_name} has embedded NUL bytes and
-                                 cannot be launched via the shell"
-                            );
-                            return;
-                        }
-                    }
-                };
-                promise::spawn::spawn(async move {
-                    use config::keyassignment::SpawnTabDomain;
-                    use wezterm_term::TerminalSize;
-
-                    // We send the script to execute to the shell on stdin, rather than ask the
-                    // shell to execute it directly, so that we start the shell and read in the
-                    // user's rc files before running the script.  Without this, wezterm on macOS
-                    // is launched with a default and very anemic path, and that is frustrating for
-                    // users.
-
-                    let mux = Mux::get();
-                    let window_id = None;
-                    let pane_id = None;
-                    let cmd = None;
-                    let cwd = if is_directory {
-                        Some(file_name.clone())
-                    } else {
-                        None
-                    };
-                    let workspace = mux.active_workspace();
-
-                    match mux
-                        .spawn_tab_or_window(
-                            window_id,
-                            SpawnTabDomain::DomainName("local".to_string()),
-                            cmd,
-                            cwd,
-                            TerminalSize::default(),
-                            pane_id,
-                            workspace,
-                            None, // optional position
-                        )
-                        .await
-                    {
-                        Ok((_tab, pane, _window_id)) => {
-                            if let Some(quoted_file_name) = quoted_file_name {
-                                log::trace!("Spawned {file_name} as pane_id {}", pane.pane_id());
-                                let mut writer = pane.writer();
-                                write!(writer, "{quoted_file_name} ; exit\n").ok();
-                            } else {
-                                log::trace!(
-                                    "Spawned pane_id {} with cwd={file_name}",
-                                    pane.pane_id()
-                                );
-                            }
-                        }
-                        Err(err) => {
-                            log::error!("Failed to spawn {file_name}: {err:#?}");
-                        }
-                    };
-                })
-                .detach();
+                Self::spawn_open_command_script(file_name, false);
+            }
+            ApplicationEvent::OpenCommandScriptInTab(file_name) => {
+                Self::spawn_open_command_script(file_name, true);
             }
             ApplicationEvent::PerformKeyAssignment(action) => {
                 // We should only get here when there are no windows open
@@ -469,8 +479,7 @@ impl GuiFrontEnd {
                         set_default_terminal_with_feedback();
                     }
                     KeyAssignment::ReloadConfiguration => {
-                        // Reload is handled by the active window showing a toast
-                        // See termwindow/mod.rs ReloadConfiguration handling
+                        // Manual reload is intentionally disabled.
                     }
                     KeyAssignment::QuitApplication => {
                         // If we get here, there are no windows that could have received
