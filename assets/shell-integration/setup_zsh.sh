@@ -174,14 +174,18 @@ export CLICOLOR=1
 export LSCOLORS="Gxfxcxdxbxegedabagacad"
 
 # Smart History Configuration
-HISTSIZE=50000
-SAVEHIST=50000
-HISTFILE="\$HOME/.zsh_history"
-setopt HIST_IGNORE_DUPS          # Do not record an event that was just recorded again
-setopt HIST_IGNORE_SPACE         # Do not record an event starting with a space
+HISTSIZE="\${HISTSIZE:-50000}"
+SAVEHIST="\${SAVEHIST:-50000}"
+if [[ -z "\${HISTFILE:-}" ]]; then
+    HISTFILE="\${ZDOTDIR:-\$HOME}/.zsh_history"
+fi
 setopt HIST_FIND_NO_DUPS         # Do not display a line previously found
 setopt SHARE_HISTORY             # Share history between all sessions
 setopt APPEND_HISTORY            # Append history to the history file (no overwriting)
+setopt INC_APPEND_HISTORY        # Write each command to history file immediately
+setopt EXTENDED_HISTORY          # Include timestamps in saved history
+unsetopt HIST_IGNORE_DUPS        # Keep duplicate commands for complete history
+unsetopt HIST_IGNORE_SPACE       # Keep commands that begin with a space
 
 # Set default Zsh options
 setopt interactive_comments
