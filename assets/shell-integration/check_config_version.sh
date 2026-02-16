@@ -102,12 +102,8 @@ detect_login_shell() {
 	fi
 }
 
-# Determine resource dir
-if [[ -d "/Applications/Kaku.app/Contents/Resources" ]]; then
-	RESOURCE_DIR="/Applications/Kaku.app/Contents/Resources"
-else
-	RESOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-fi
+# Determine resource dir (always derive from script location, not hardcoded path)
+RESOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 user_version="$(read_config_version)"
 
@@ -208,7 +204,7 @@ if [[ -f "$RESOURCE_DIR/setup_zsh.sh" ]]; then
 	bash "$RESOURCE_DIR/setup_zsh.sh" --update-only
 fi
 
-if ! command -v delta &>/dev/null; then
+if [[ ! -f "$HOME/.config/kaku/zsh/bin/delta" ]]; then
 	if [[ -f "$RESOURCE_DIR/install_delta.sh" ]]; then
 		read -p "Install Delta for better git diffs? [Y/n] " -n 1 -r
 		echo
