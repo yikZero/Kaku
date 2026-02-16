@@ -650,7 +650,7 @@ fn connect_ssh_session(
                 // Our session has been authenticated: we can now
                 // set up the real pty for the pane
                 match smol::block_on(session.request_pty(
-                    &config::configuration().term,
+                    "xterm-256color",
                     crate::terminal_size_to_pty_size(*size.lock().unwrap())?,
                     command_line.as_ref().map(|s| s.as_str()),
                     Some(env),
@@ -718,7 +718,7 @@ impl Domain for RemoteSshDomain {
         let StartNewSessionResult { pty, child, writer } = if let Some(session) = session.take() {
             match session
                 .request_pty(
-                    &config::configuration().term,
+                    "xterm-256color",
                     crate::terminal_size_to_pty_size(size)
                         .context("compute pty size from terminal size")?,
                     command_line.as_ref().map(|s| s.as_str()),
