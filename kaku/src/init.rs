@@ -33,6 +33,9 @@ mod imp {
     use std::os::unix::fs::PermissionsExt;
 
     pub fn run(update_only: bool) -> anyhow::Result<()> {
+        ensure_user_config().context("ensure user config exists")?;
+        ensure_opencode_config().context("ensure opencode config exists")?;
+
         install_kaku_wrapper().context("install kaku wrapper")?;
 
         let script = resolve_setup_script()
@@ -189,5 +192,183 @@ exit 127
         );
 
         candidates.into_iter().find(|p| p.exists())
+    }
+
+    fn ensure_user_config() -> anyhow::Result<()> {
+        let config_path = resolve_user_config_path();
+        if config_path.exists() {
+            return Ok(());
+        }
+
+        let parent = config_path
+            .parent()
+            .ok_or_else(|| anyhow!("invalid config path: {}", config_path.display()))?;
+        config::create_user_owned_dirs(parent).context("create config directory")?;
+
+        std::fs::write(&config_path, minimal_user_config_template())
+            .context("write user config file")?;
+        Ok(())
+    }
+
+    fn ensure_opencode_config() -> anyhow::Result<()> {
+        let opencode_dir = config::HOME_DIR.join(".config").join("opencode");
+        let opencode_config = opencode_dir.join("opencode.json");
+        let themes_dir = opencode_dir.join("themes");
+
+        if opencode_config.exists() {
+            return Ok(());
+        }
+
+        config::create_user_owned_dirs(&opencode_dir)
+            .context("create opencode config directory")?;
+        config::create_user_owned_dirs(&themes_dir).context("create opencode themes directory")?;
+
+        let theme_content = r##"{
+  "$schema": "https://opencode.ai/theme.json",
+  "defs": {
+    "bg": "#15141b",
+    "panel": "#15141b",
+    "element": "#1f1d28",
+    "text": "#edecee",
+    "muted": "#6b6b6b",
+    "primary": "#a277ff",
+    "secondary": "#61ffca",
+    "accent": "#ffca85",
+    "error": "#ff6767",
+    "warning": "#ffca85",
+    "success": "#61ffca",
+    "info": "#a277ff",
+    "border": "#15141b",
+    "border_active": "#29263c",
+    "border_subtle": "#15141b"
+  },
+  "theme": {
+    "primary": "primary",
+    "secondary": "secondary",
+    "accent": "accent",
+    "error": "error",
+    "warning": "warning",
+    "success": "success",
+    "info": "info",
+    "text": "text",
+    "textMuted": "muted",
+    "background": "bg",
+    "backgroundPanel": "panel",
+    "backgroundElement": "element",
+    "border": "border",
+    "borderActive": "border_active",
+    "borderSubtle": "border_subtle",
+    "diffAdded": "success",
+    "diffRemoved": "error",
+    "diffContext": "muted",
+    "diffHunkHeader": "primary",
+    "diffHighlightAdded": "success",
+    "diffHighlightRemoved": "error",
+    "diffAddedBg": "#1b2a24",
+    "diffRemovedBg": "#2a1b20",
+    "diffContextBg": "bg",
+    "diffLineNumber": "muted",
+    "diffAddedLineNumberBg": "#1b2a24",
+    "diffRemovedLineNumberBg": "#2a1b20",
+    "markdownText": "text",
+    "markdownHeading": "primary",
+    "markdownLink": "info",
+    "markdownLinkText": "primary",
+    "markdownCode": "accent",
+    "markdownBlockQuote": "muted",
+    "markdownEmph": "accent",
+    "markdownStrong": "secondary",
+    "markdownHorizontalRule": "muted",
+    "markdownListItem": "primary",
+    "markdownListEnumeration": "accent",
+    "markdownImage": "info",
+    "markdownImageText": "primary",
+    "markdownCodeBlock": "text",
+    "syntaxComment": "muted",
+    "syntaxKeyword": "primary",
+    "syntaxFunction": "secondary",
+    "syntaxVariable": "text",
+    "syntaxString": "success",
+    "syntaxNumber": "accent",
+    "syntaxType": "info",
+    "syntaxOperator": "primary",
+    "syntaxPunctuation": "text"
+  }
+}
+"##;
+
+        let theme_file = themes_dir.join("wezterm-match.json");
+        std::fs::write(&theme_file, theme_content).context("write opencode theme file")?;
+
+        let config_content = r#"{
+  "theme": "wezterm-match"
+}
+"#;
+
+        std::fs::write(&opencode_config, config_content).context("write opencode config file")?;
+        Ok(())
+    }
+
+    fn resolve_user_config_path() -> PathBuf {
+        config::CONFIG_DIRS
+            .first()
+            .cloned()
+            .unwrap_or_else(|| config::HOME_DIR.join(".config").join("kaku"))
+            .join("kaku.lua")
+    }
+
+    fn minimal_user_config_template() -> &'static str {
+        r#"local wezterm = require 'wezterm'
+
+local function resolve_bundled_config()
+  local resource_dir = wezterm.executable_dir:gsub('MacOS/?$', 'Resources')
+  local bundled = resource_dir .. '/kaku.lua'
+  local f = io.open(bundled, 'r')
+  if f then
+    f:close()
+    return bundled
+  end
+
+  local dev_bundled = wezterm.executable_dir .. '/../../assets/macos/Kaku.app/Contents/Resources/kaku.lua'
+  f = io.open(dev_bundled, 'r')
+  if f then
+    f:close()
+    return dev_bundled
+  end
+
+  local app_bundled = '/Applications/Kaku.app/Contents/Resources/kaku.lua'
+  f = io.open(app_bundled, 'r')
+  if f then
+    f:close()
+    return app_bundled
+  end
+
+  local home = os.getenv('HOME') or ''
+  local home_bundled = home .. '/Applications/Kaku.app/Contents/Resources/kaku.lua'
+  f = io.open(home_bundled, 'r')
+  if f then
+    f:close()
+    return home_bundled
+  end
+
+  return nil
+end
+
+local config = {}
+local bundled = resolve_bundled_config()
+
+if bundled then
+  local ok, loaded = pcall(dofile, bundled)
+  if ok and type(loaded) == 'table' then
+    config = loaded
+  else
+    wezterm.log_error('Kaku: failed to load bundled defaults from ' .. bundled)
+  end
+else
+  wezterm.log_error('Kaku: bundled defaults not found')
+end
+
+return config
+"#
     }
 }
