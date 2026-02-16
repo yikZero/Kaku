@@ -77,12 +77,6 @@ WezTerm is robust and highly hackable, and I am grateful for its engine and ecos
 
 So I built Kaku to be that environment: fast, polished, and ready to work.
 
-Big thanks to all contributors who helped build Kaku. Go follow them! ❤️
-
-<a href="https://github.com/tw93/Kaku/graphs/contributors">
-  <img src="./CONTRIBUTORS.svg?v=2" width="1000" />
-</a>
-
 ### Performance
 
 | Metric | Upstream | Kaku | Methodology |
@@ -107,6 +101,14 @@ Achieved through aggressive stripping of unused features, lazy loading of color 
 3. **Can Kaku use transparent windows on macOS?**
 
    Yes. You can set `window_background_opacity` and optionally `macos_window_background_blur` in `~/.config/kaku/kaku.lua`. Transparent mode now keeps top/right/bottom padding regions visually consistent to avoid transparent gaps.
+
+## Contributors
+
+Big thanks to all contributors who helped build Kaku. Go follow them! ❤️
+
+<a href="https://github.com/tw93/Kaku/graphs/contributors">
+  <img src="./CONTRIBUTORS.svg?v=2" width="1000" />
+</a>
 
 ## Support
 
