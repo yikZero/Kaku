@@ -676,6 +676,13 @@ config.keys = {
     action = wezterm.action.TogglePaneZoomState,
   },
 
+  -- Cmd+Shift+S: Toggle split direction (horizontal <-> vertical)
+  {
+    key = 'S',
+    mods = 'CMD|SHIFT',
+    action = wezterm.action.TogglePaneSplitDirection,
+  },
+
   -- Cmd+Ctrl+Arrows: Resize panes
   {
     key = 'LeftArrow',
