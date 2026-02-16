@@ -46,7 +46,7 @@ Kaku comes with intuitive macOS-native shortcuts:
 | Close Tab/Pane | `Cmd + W` |
 | Navigate Tabs | `Cmd + [`, `Cmd + ]` or `Cmd + 1-9` |
 | Navigate Panes | `Cmd + Opt + Arrows` |
-| Clear Screen | `Cmd + K` (`Cmd + R` compatible) |
+| Clear Screen | `Cmd + K` |
 | Font Size | `Cmd + +`, `Cmd + -`, `Cmd + 0` |
 | Smart Jump | `z <dir>` |
 | Smart Select | `z -l <dir>` |
