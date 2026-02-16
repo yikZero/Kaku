@@ -186,6 +186,7 @@ fi
 if [[ $user_version -lt 9 ]]; then
 	echo "  • Tab key now shows completion list instead of accepting suggestions"
 	echo "  • Use Right Arrow key to accept autosuggestions"
+	echo "  • Auto set TERM=xterm-256color for SSH to fix remote compatibility"
 fi
 echo ""
 
