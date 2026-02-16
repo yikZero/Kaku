@@ -83,6 +83,7 @@ core-graphics = "=0.24.0"
 core-text = "=21.0.0"
 criterion = "0.5"
 crossbeam = "0.8"
+crossterm = "0.28"
 csscolorparser = "0.6"
 deltae = "0.3"
 dhat = "0.3"
@@ -189,6 +190,7 @@ promise = { path = "crates/promise" }
 quote = "1.0.2"
 rangeset = { path = "crates/rangeset" }
 ratelim= { path = "crates/ratelim" }
+ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
 raw-window-handle = "0.6"
 rayon = "1.10"
 rcgen = "0.12"
