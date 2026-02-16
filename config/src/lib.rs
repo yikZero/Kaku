@@ -468,6 +468,115 @@ pub fn create_user_owned_dirs(p: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn user_config_path() -> PathBuf {
+    CONFIG_DIRS
+        .first()
+        .cloned()
+        .unwrap_or_else(|| HOME_DIR.join(".config").join("kaku"))
+        .join("kaku.lua")
+}
+
+pub fn ensure_user_config_exists() -> anyhow::Result<PathBuf> {
+    let config_path = user_config_path();
+    if config_path.exists() {
+        return Ok(config_path);
+    }
+
+    let parent = config_path
+        .parent()
+        .ok_or_else(|| anyhow!("invalid config path: {}", config_path.display()))?;
+    create_user_owned_dirs(parent).context("create config directory")?;
+
+    std::fs::write(&config_path, minimal_user_config_template())
+        .context("write minimal user config file")?;
+    Ok(config_path)
+}
+
+fn minimal_user_config_template() -> &'static str {
+    r#"local wezterm = require 'wezterm'
+
+local function resolve_bundled_config()
+  local resource_dir = wezterm.executable_dir:gsub('MacOS/?$', 'Resources')
+  local bundled = resource_dir .. '/kaku.lua'
+  local f = io.open(bundled, 'r')
+  if f then
+    f:close()
+    return bundled
+  end
+
+  local dev_bundled = wezterm.executable_dir .. '/../../assets/macos/Kaku.app/Contents/Resources/kaku.lua'
+  f = io.open(dev_bundled, 'r')
+  if f then
+    f:close()
+    return dev_bundled
+  end
+
+  local app_bundled = '/Applications/Kaku.app/Contents/Resources/kaku.lua'
+  f = io.open(app_bundled, 'r')
+  if f then
+    f:close()
+    return app_bundled
+  end
+
+  local home = os.getenv('HOME') or ''
+  local home_bundled = home .. '/Applications/Kaku.app/Contents/Resources/kaku.lua'
+  f = io.open(home_bundled, 'r')
+  if f then
+    f:close()
+    return home_bundled
+  end
+
+  return nil
+end
+
+local config = {}
+local bundled = resolve_bundled_config()
+
+if bundled then
+  local ok, loaded = pcall(dofile, bundled)
+  if ok and type(loaded) == 'table' then
+    config = loaded
+  else
+    wezterm.log_error('Kaku: failed to load bundled defaults from ' .. bundled)
+  end
+else
+  wezterm.log_error('Kaku: bundled defaults not found')
+end
+
+-- User overrides:
+-- Kaku intentionally keeps WezTerm-compatible Lua API names
+-- for maximum compatibility, so `wezterm.*` here is expected.
+--
+-- 1) Font family and size
+-- config.font = wezterm.font('JetBrains Mono')
+-- config.font_size = 16.0
+--
+-- 2) Color scheme
+-- config.color_scheme = 'Builtin Solarized Dark'
+--
+-- 3) Window size and padding
+-- config.initial_cols = 120
+-- config.initial_rows = 30
+-- config.window_padding = { left = '24px', right = '24px', top = '40px', bottom = '20px' }
+--
+-- 4) Default shell/program
+-- config.default_prog = { '/bin/zsh', '-l' }
+--
+-- 5) Cursor and scrollback
+-- config.default_cursor_style = 'BlinkingBar'
+-- config.scrollback_lines = 20000
+--
+-- 6) Add or override a key binding
+-- table.insert(config.keys, {
+--   key = 'Enter',
+--   mods = 'CMD|SHIFT',
+--   action = wezterm.action.TogglePaneZoomState,
+-- })
+
+return config
+"#
+}
+
 fn xdg_config_home() -> PathBuf {
     match std::env::var_os("XDG_CONFIG_HOME").map(|s| PathBuf::from(s).join("kaku")) {
         Some(p) => p,

@@ -197,18 +197,7 @@ exit 127
     }
 
     fn ensure_user_config() -> anyhow::Result<()> {
-        let config_path = resolve_user_config_path();
-        if config_path.exists() {
-            return Ok(());
-        }
-
-        let parent = config_path
-            .parent()
-            .ok_or_else(|| anyhow!("invalid config path: {}", config_path.display()))?;
-        config::create_user_owned_dirs(parent).context("create config directory")?;
-
-        std::fs::write(&config_path, minimal_user_config_template())
-            .context("write user config file")?;
+        config::ensure_user_config_exists().context("ensure user config exists")?;
         Ok(())
     }
 
@@ -330,68 +319,5 @@ exit 127
         std::fs::write(&opencode_config, config_content).context("write opencode config file")?;
         println!("OpenCode theme configured successfully.");
         Ok(())
-    }
-
-    fn resolve_user_config_path() -> PathBuf {
-        config::CONFIG_DIRS
-            .first()
-            .cloned()
-            .unwrap_or_else(|| config::HOME_DIR.join(".config").join("kaku"))
-            .join("kaku.lua")
-    }
-
-    fn minimal_user_config_template() -> &'static str {
-        r#"local wezterm = require 'wezterm'
-
-local function resolve_bundled_config()
-  local resource_dir = wezterm.executable_dir:gsub('MacOS/?$', 'Resources')
-  local bundled = resource_dir .. '/kaku.lua'
-  local f = io.open(bundled, 'r')
-  if f then
-    f:close()
-    return bundled
-  end
-
-  local dev_bundled = wezterm.executable_dir .. '/../../assets/macos/Kaku.app/Contents/Resources/kaku.lua'
-  f = io.open(dev_bundled, 'r')
-  if f then
-    f:close()
-    return dev_bundled
-  end
-
-  local app_bundled = '/Applications/Kaku.app/Contents/Resources/kaku.lua'
-  f = io.open(app_bundled, 'r')
-  if f then
-    f:close()
-    return app_bundled
-  end
-
-  local home = os.getenv('HOME') or ''
-  local home_bundled = home .. '/Applications/Kaku.app/Contents/Resources/kaku.lua'
-  f = io.open(home_bundled, 'r')
-  if f then
-    f:close()
-    return home_bundled
-  end
-
-  return nil
-end
-
-local config = {}
-local bundled = resolve_bundled_config()
-
-if bundled then
-  local ok, loaded = pcall(dofile, bundled)
-  if ok and type(loaded) == 'table' then
-    config = loaded
-  else
-    wezterm.log_error('Kaku: failed to load bundled defaults from ' .. bundled)
-  end
-else
-  wezterm.log_error('Kaku: bundled defaults not found')
-end
-
-return config
-"#
     }
 }

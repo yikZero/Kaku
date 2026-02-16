@@ -792,6 +792,12 @@ fn run() -> anyhow::Result<()> {
 
     let opts = Opt::parse();
 
+    if opts.config_file.is_none() && !opts.skip_config {
+        if let Err(err) = config::ensure_user_config_exists() {
+            log::warn!("Failed to ensure user config exists: {:#}", err);
+        }
+    }
+
     // This is a bit gross.
     // In order to not to automatically open a standard windows console when
     // we run, we use the windows_subsystem attribute at the top of this
