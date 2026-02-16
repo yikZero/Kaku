@@ -127,6 +127,8 @@
 				<string>NSFilenamesPboardType</string>
 				<string>public.plain-text</string>
 			</array>
+			<key>NSRequiredContext</key>
+			<dict/>
 		</dict>
 		<dict>
 			<key>NSMessage</key>
@@ -147,6 +149,8 @@
 				<string>NSFilenamesPboardType</string>
 				<string>public.plain-text</string>
 			</array>
+			<key>NSRequiredContext</key>
+			<dict/>
 		</dict>
 	</array>
 </dict>
