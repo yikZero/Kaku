@@ -162,6 +162,7 @@ impl GuiFrontEnd {
     pub fn try_new() -> anyhow::Result<Rc<GuiFrontEnd>> {
         let connection = Connection::init()?;
         connection.set_event_handler(Self::app_event_handler);
+        connection.flush_pending_service_events();
 
         let mux = Mux::get();
         let client_id = mux.active_identity().expect("to have set my own id");

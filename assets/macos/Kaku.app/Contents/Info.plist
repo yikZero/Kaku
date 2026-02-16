@@ -106,48 +106,48 @@
 			</array>
 		</dict>
 	</array>
-		<key>NSServices</key>
-		<array>
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMessage</key>
+			<string>openInKakuService</string>
+			<key>NSMenuItem</key>
 			<dict>
-				<key>NSMessage</key>
-				<string>openInKakuService</string>
-				<key>NSMenuItem</key>
-				<dict>
-					<key>default</key>
-					<string>New Kaku Tab Here</string>
-				</dict>
-				<key>NSPortName</key>
-				<string>Kaku</string>
-				<key>NSSendFileTypes</key>
-				<array>
-					<string>public.folder</string>
-				</array>
-				<key>NSSendTypes</key>
-				<array>
-					<string>NSFilenamesPboardType</string>
-					<string>public.plain-text</string>
-				</array>
+				<key>default</key>
+				<string>New Kaku Tab Here</string>
 			</dict>
+			<key>NSPortName</key>
+			<string>fun.tw93.kaku</string>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>public.folder</string>
+			</array>
+			<key>NSSendTypes</key>
+			<array>
+				<string>NSFilenamesPboardType</string>
+				<string>public.plain-text</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSMessage</key>
+			<string>openInKakuWindowService</string>
+			<key>NSMenuItem</key>
 			<dict>
-				<key>NSMessage</key>
-				<string>openInKakuWindowService</string>
-				<key>NSMenuItem</key>
-				<dict>
-					<key>default</key>
-					<string>New Kaku Window Here</string>
-				</dict>
-				<key>NSPortName</key>
-				<string>Kaku</string>
-				<key>NSSendFileTypes</key>
-				<array>
-					<string>public.folder</string>
-				</array>
-				<key>NSSendTypes</key>
-				<array>
-					<string>NSFilenamesPboardType</string>
-					<string>public.plain-text</string>
-				</array>
+				<key>default</key>
+				<string>New Kaku Window Here</string>
 			</dict>
-		</array>
-	</dict>
+			<key>NSPortName</key>
+			<string>fun.tw93.kaku</string>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>public.folder</string>
+			</array>
+			<key>NSSendTypes</key>
+			<array>
+				<string>NSFilenamesPboardType</string>
+				<string>public.plain-text</string>
+			</array>
+		</dict>
+	</array>
+</dict>
 </plist>

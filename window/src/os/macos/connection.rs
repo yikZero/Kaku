@@ -4,7 +4,7 @@
 use super::nsstring_to_str;
 use super::window::WindowInner;
 use crate::connection::ConnectionOps;
-use crate::os::macos::app::create_app_delegate;
+use crate::os::macos::app::{create_app_delegate, flush_pending_service_opens};
 use crate::screen::{ScreenInfo, Screens};
 use crate::spawn::*;
 use crate::Appearance;
@@ -247,6 +247,10 @@ impl ConnectionOps for Connection {
         }
 
         Ok(())
+    }
+
+    fn flush_pending_service_events(&self) {
+        flush_pending_service_opens();
     }
 
     fn screens(&self) -> anyhow::Result<Screens> {

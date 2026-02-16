@@ -13,6 +13,7 @@ use objc::rc::StrongPtr;
 use objc::runtime::{Class, Object, Sel, BOOL, NO, YES};
 use objc::*;
 use std::cell::RefCell;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -20,6 +21,10 @@ const CLS_NAME: &str = "KakuAppDelegate";
 
 thread_local! {
     static LAST_OPEN_UNTITLED_SPAWN: RefCell<Option<Instant>> = RefCell::new(None);
+}
+
+lazy_static::lazy_static! {
+    static ref PENDING_SERVICE_OPENS: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
 }
 // macOS can emit applicationOpenUntitledFile twice while no window has
 // materialized yet; keep a wider debounce to avoid duplicate SpawnWindow work.
@@ -261,6 +266,49 @@ fn first_service_path(pasteboard: *mut Object) -> Option<String> {
     }
 }
 
+fn dispatch_or_queue_service_open(path: String, prefer_existing_window: bool) {
+    if let Some(conn) = Connection::get() {
+        let event = if prefer_existing_window {
+            ApplicationEvent::OpenCommandScriptInTab(path)
+        } else {
+            ApplicationEvent::OpenCommandScript(path)
+        };
+        conn.dispatch_app_event(event);
+        return;
+    }
+
+    log::debug!("service request queued until GUI connection is ready");
+    PENDING_SERVICE_OPENS
+        .lock()
+        .unwrap()
+        .push((path, prefer_existing_window));
+}
+
+pub(crate) fn flush_pending_service_opens() {
+    let pending = {
+        let mut queued = PENDING_SERVICE_OPENS.lock().unwrap();
+        std::mem::take(&mut *queued)
+    };
+
+    if pending.is_empty() {
+        return;
+    }
+
+    if let Some(conn) = Connection::get() {
+        for (path, prefer_existing_window) in pending {
+            let event = if prefer_existing_window {
+                ApplicationEvent::OpenCommandScriptInTab(path)
+            } else {
+                ApplicationEvent::OpenCommandScript(path)
+            };
+            conn.dispatch_app_event(event);
+        }
+    } else {
+        let mut queued = PENDING_SERVICE_OPENS.lock().unwrap();
+        queued.extend(pending);
+    }
+}
+
 extern "C" fn open_in_kaku_service(
     _self: &mut Object,
     _sel: Sel,
@@ -273,12 +321,8 @@ extern "C" fn open_in_kaku_service(
         return;
     };
 
-    if let Some(conn) = Connection::get() {
-        log::debug!("openInKakuService {path}");
-        conn.dispatch_app_event(ApplicationEvent::OpenCommandScriptInTab(path));
-    } else {
-        log::warn!("openInKakuService: no active connection");
-    }
+    log::debug!("openInKakuService {path}");
+    dispatch_or_queue_service_open(path, true);
 }
 
 extern "C" fn open_in_kaku_window_service(
@@ -293,12 +337,8 @@ extern "C" fn open_in_kaku_window_service(
         return;
     };
 
-    if let Some(conn) = Connection::get() {
-        log::debug!("openInKakuWindowService {path}");
-        conn.dispatch_app_event(ApplicationEvent::OpenCommandScript(path));
-    } else {
-        log::warn!("openInKakuWindowService: no active connection");
-    }
+    log::debug!("openInKakuWindowService {path}");
+    dispatch_or_queue_service_open(path, false);
 }
 
 extern "C" fn application_dock_menu(
