@@ -909,6 +909,7 @@ impl App {
             return;
         }
         self.editing = true;
+        self.edit_buf = if field.value == "—" {
         // API Key fields show masked values; start with empty buffer to avoid saving the mask
         self.edit_buf = if field.key.contains("API Key") {
             String::new()
@@ -974,7 +975,7 @@ impl App {
         }
 
         let old_val = tool.fields[self.field_index].value.clone();
-        if new_val == old_val {
+        if new_val == old_val || (new_val.is_empty() && old_val == "—") {
             return;
         }
 
