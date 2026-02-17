@@ -45,7 +45,7 @@ Kaku comes with intuitive macOS-native shortcuts:
 | Zoom/Unzoom Pane | `Cmd + Shift + Enter` |
 | Resize Pane | `Cmd + Ctrl + Arrows` |
 | Close Tab/Pane | `Cmd + W` |
-| Navigate Tabs | `Cmd + [`, `Cmd + ]` or `Cmd + 1-9` |
+| Navigate Tabs | `Cmd + Shift + [`, `Cmd + Shift + ]` or `Cmd + 1-9` |
 | Navigate Panes | `Cmd + Opt + Arrows` |
 | Clear Screen | `Cmd + K` |
 | Font Size | `Cmd + +`, `Cmd + -`, `Cmd + 0` |
