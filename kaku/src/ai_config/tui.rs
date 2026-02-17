@@ -1,9 +1,11 @@
 use anyhow::Context;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseEventKind,
+};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use crossterm::event::{EnableMouseCapture, DisableMouseCapture};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -376,10 +378,7 @@ fn get_gemini_account() -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
 
     // Extract "active" field
-    parsed
-        .get("active")?
-        .as_str()
-        .map(|s| s.to_string())
+    parsed.get("active")?.as_str().map(|s| s.to_string())
 }
 
 /// Get Codex account email from JWT token in auth.json
@@ -389,10 +388,7 @@ fn get_codex_account() -> Option<String> {
     let auth_json: serde_json::Value = serde_json::from_str(&raw).ok()?;
 
     // Extract access_token from tokens object
-    let token = auth_json
-        .get("tokens")?
-        .get("access_token")?
-        .as_str()?;
+    let token = auth_json.get("tokens")?.get("access_token")?.as_str()?;
 
     // JWT format: header.payload.signature
     let parts: Vec<&str> = token.split('.').collect();
@@ -720,9 +716,7 @@ fn extract_codex_fields(raw: &str) -> Vec<FieldEntry> {
 
 /// Read model slugs from Codex's own cache, or from models.dev.
 fn read_codex_model_options() -> Vec<String> {
-    let cache_path = config::HOME_DIR
-        .join(".codex")
-        .join("models_cache.json");
+    let cache_path = config::HOME_DIR.join(".codex").join("models_cache.json");
     if let Ok(raw) = std::fs::read_to_string(&cache_path) {
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
             let mut models: Vec<(String, usize)> = parsed
@@ -738,10 +732,8 @@ fn read_codex_model_options() -> Vec<String> {
                         })
                         .filter_map(|m| {
                             let slug = m.get("slug").and_then(|v| v.as_str())?;
-                            let priority = m
-                                .get("priority")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(999) as usize;
+                            let priority =
+                                m.get("priority").and_then(|v| v.as_u64()).unwrap_or(999) as usize;
                             Some((slug.to_string(), priority))
                         })
                         .collect()
@@ -777,13 +769,11 @@ fn read_codex_reasoning_options() -> Vec<String> {
                 // Find the current model or first visible model
                 let model = models
                     .iter()
-                    .find(|m| {
-                        m.get("slug").and_then(|v| v.as_str()) == Some(&current_model)
-                    })
+                    .find(|m| m.get("slug").and_then(|v| v.as_str()) == Some(&current_model))
                     .or_else(|| {
-                        models.iter().find(|m| {
-                            m.get("visibility").and_then(|v| v.as_str()) == Some("list")
-                        })
+                        models
+                            .iter()
+                            .find(|m| m.get("visibility").and_then(|v| v.as_str()) == Some("list"))
                     });
 
                 if let Some(m) = model {
@@ -794,7 +784,9 @@ fn read_codex_reasoning_options() -> Vec<String> {
                         let opts: Vec<String> = levels
                             .iter()
                             .filter_map(|l| {
-                                l.get("effort").and_then(|v| v.as_str()).map(|s| s.to_string())
+                                l.get("effort")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string())
                             })
                             .collect();
                         if !opts.is_empty() {
@@ -853,10 +845,7 @@ fn extract_gemini_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
 
 /// Read model choices from `copilot --help` output, fallback to models.dev.
 fn read_copilot_model_options() -> Vec<String> {
-    if let Ok(output) = std::process::Command::new("copilot")
-        .arg("--help")
-        .output()
-    {
+    if let Ok(output) = std::process::Command::new("copilot").arg("--help").output() {
         let text = String::from_utf8_lossy(&output.stdout);
         // Find "--model" first, then parse the choices after it
         if let Some(model_pos) = text.find("--model") {
@@ -1026,7 +1015,7 @@ fn extract_opencode_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
                         key: name.clone(),
                         value: status,
                         options: vec![],
-                        editable: auth_type == "api",  // API keys are editable, OAuth is not
+                        editable: auth_type == "api", // API keys are editable, OAuth is not
                     });
                 }
             }
@@ -1312,10 +1301,7 @@ struct App {
 impl App {
     fn new() -> Self {
         let tools: Vec<ToolState> = ALL_TOOLS.iter().map(|t| ToolState::load(*t)).collect();
-        let first = tools
-            .iter()
-            .position(|t| !t.fields.is_empty())
-            .unwrap_or(0);
+        let first = tools.iter().position(|t| !t.fields.is_empty()).unwrap_or(0);
         App {
             tools,
             tool_index: first,
@@ -1389,7 +1375,8 @@ impl App {
 
         // Show OAuth re-authentication command for non-editable auth fields
         if !field.editable {
-            if field.key == "Auth" || (field.value.starts_with('✓') && !field.key.contains(" ▸ ")) {
+            if field.key == "Auth" || (field.value.starts_with('✓') && !field.key.contains(" ▸ "))
+            {
                 let cmd = match tool.tool {
                     Tool::OpenCode => Some("opencode auth"),
                     Tool::Gemini => Some("gemini auth login"),
@@ -1401,14 +1388,25 @@ impl App {
 
                 if let Some(auth_cmd) = cmd {
                     // Execute auth command in a new Terminal window (macOS)
-                    let script = format!("tell application \"Terminal\" to do script \"{}\"", auth_cmd);
+                    let script = format!(
+                        "tell application \"Terminal\" to do script \"{}\"",
+                        auth_cmd
+                    );
                     match std::process::Command::new("osascript")
                         .arg("-e")
                         .arg(&script)
                         .spawn()
                     {
-                        Ok(_) => self.status_msg = Some("Opening authentication in new terminal window...".into()),
-                        Err(_) => self.status_msg = Some(format!("Failed to open terminal. Run '{}' manually", auth_cmd)),
+                        Ok(_) => {
+                            self.status_msg =
+                                Some("Opening authentication in new terminal window...".into())
+                        }
+                        Err(_) => {
+                            self.status_msg = Some(format!(
+                                "Failed to open terminal. Run '{}' manually",
+                                auth_cmd
+                            ))
+                        }
                     }
                 } else {
                     self.status_msg = Some("OpenClaw uses API keys, check config file".to_string());
@@ -1419,14 +1417,25 @@ impl App {
                 let auth_cmd = format!("opencode auth add {}", provider);
 
                 // Execute auth command in a new Terminal window (macOS)
-                let script = format!("tell application \"Terminal\" to do script \"{}\"", auth_cmd);
+                let script = format!(
+                    "tell application \"Terminal\" to do script \"{}\"",
+                    auth_cmd
+                );
                 match std::process::Command::new("osascript")
                     .arg("-e")
                     .arg(&script)
                     .spawn()
                 {
-                    Ok(_) => self.status_msg = Some("Opening authentication in new terminal window...".into()),
-                    Err(_) => self.status_msg = Some(format!("Failed to open terminal. Run '{}' manually", auth_cmd)),
+                    Ok(_) => {
+                        self.status_msg =
+                            Some("Opening authentication in new terminal window...".into())
+                    }
+                    Err(_) => {
+                        self.status_msg = Some(format!(
+                            "Failed to open terminal. Run '{}' manually",
+                            auth_cmd
+                        ))
+                    }
                 }
             }
             return;
@@ -1452,13 +1461,17 @@ impl App {
         } else if field.key.contains("API Key") && !field.key.contains(" ▸ ") {
             // OpenCode provider API Key from opencode.json - keep masked value behavior
             String::new()
-        } else if tool.tool == Tool::OpenCode && !field.key.contains(" ▸ ") && field.editable && field.value.starts_with("✓") {
+        } else if tool.tool == Tool::OpenCode
+            && !field.key.contains(" ▸ ")
+            && field.editable
+            && field.value.starts_with("✓")
+        {
             // OpenCode auth.json API Key - load full key (editable API type fields)
             get_opencode_api_key(&field.key).unwrap_or_else(String::new)
         } else {
             field.value.clone()
         };
-        self.edit_cursor = self.edit_buf.len();  // Start cursor at end
+        self.edit_cursor = self.edit_buf.len(); // Start cursor at end
         self.focus = Focus::Editor;
     }
 
@@ -1948,8 +1961,12 @@ pub fn run() -> anyhow::Result<()> {
     let result = run_loop(&mut terminal, &mut app);
 
     disable_raw_mode().context("disable raw mode")?;
-    crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)
-        .context("leave alternate screen")?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )
+    .context("leave alternate screen")?;
     terminal.show_cursor().context("show cursor")?;
 
     result
@@ -2006,7 +2023,8 @@ fn run_loop(
                         }
                         KeyCode::Backspace => {
                             if key.modifiers.contains(KeyModifiers::CONTROL)
-                                || key.modifiers.contains(KeyModifiers::SUPER) {
+                                || key.modifiers.contains(KeyModifiers::SUPER)
+                            {
                                 // Cmd+Backspace (macOS) or Ctrl+Backspace - clear all
                                 app.edit_buf.clear();
                                 app.edit_cursor = 0;
