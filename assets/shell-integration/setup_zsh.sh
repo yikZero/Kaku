@@ -179,13 +179,14 @@ SAVEHIST="\${SAVEHIST:-50000}"
 if [[ -z "\${HISTFILE:-}" ]]; then
     HISTFILE="\${ZDOTDIR:-\$HOME}/.zsh_history"
 fi
-setopt HIST_FIND_NO_DUPS         # Do not display a line previously found
+setopt HIST_IGNORE_ALL_DUPS      # Remove older duplicate when new entry is added
+setopt HIST_FIND_NO_DUPS         # Do not display duplicates when searching history
+setopt HIST_REDUCE_BLANKS        # Remove blank lines from history
+setopt HIST_IGNORE_SPACE         # Skip commands that start with a space
 setopt SHARE_HISTORY             # Share history between all sessions
 setopt APPEND_HISTORY            # Append history to the history file (no overwriting)
 setopt INC_APPEND_HISTORY        # Write each command to history file immediately
 setopt EXTENDED_HISTORY          # Include timestamps in saved history
-unsetopt HIST_IGNORE_DUPS        # Keep duplicate commands for complete history
-unsetopt HIST_IGNORE_SPACE       # Keep commands that begin with a space
 
 # Set default Zsh options
 setopt interactive_comments
