@@ -467,7 +467,12 @@ config.keys = {
       elseif #tabs > 1 then
         win:perform_action(wezterm.action.CloseCurrentTab { confirm = false }, pane)
       else
-        win:perform_action(wezterm.action.HideApplication, pane)
+        local all_windows = wezterm.mux.all_windows()
+        if #all_windows > 1 then
+          win:perform_action(wezterm.action.CloseCurrentTab { confirm = false }, pane)
+        else
+          win:perform_action(wezterm.action.HideApplication, pane)
+        end
       end
     end),
   },
