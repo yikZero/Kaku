@@ -3,7 +3,9 @@ use crate::macos::menu::RepresentedItem;
 use crate::macos::{nsstring, nsstring_to_str};
 use crate::menu::{Menu, MenuItem};
 use crate::{ApplicationEvent, Connection};
-use cocoa::appkit::{NSApp, NSApplicationTerminateReply, NSFilenamesPboardType, NSStringPboardType};
+use cocoa::appkit::{
+    NSApp, NSApplicationTerminateReply, NSFilenamesPboardType, NSStringPboardType,
+};
 use cocoa::base::id;
 use cocoa::foundation::NSInteger;
 use config::keyassignment::KeyAssignment;
@@ -334,14 +336,11 @@ fn parse_url_action(url: &Url) -> Option<(&str, String)> {
         return None;
     }
 
-    let action = url
-        .host_str()
-        .filter(|host| !host.is_empty())
-        .or_else(|| {
-            url.path_segments()
-                .and_then(|mut segments| segments.next())
-                .filter(|segment| !segment.is_empty())
-        })?;
+    let action = url.host_str().filter(|host| !host.is_empty()).or_else(|| {
+        url.path_segments()
+            .and_then(|mut segments| segments.next())
+            .filter(|segment| !segment.is_empty())
+    })?;
 
     if action != "open-tab" {
         return None;
@@ -476,8 +475,7 @@ fn get_class() -> &'static Class {
             );
             cls.add_method(
                 sel!(application:openURLs:),
-                application_open_urls
-                    as extern "C" fn(&mut Object, Sel, *mut Object, *mut Object),
+                application_open_urls as extern "C" fn(&mut Object, Sel, *mut Object, *mut Object),
             );
             cls.add_method(
                 sel!(applicationDockMenu:),
