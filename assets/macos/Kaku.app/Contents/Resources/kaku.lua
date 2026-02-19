@@ -467,8 +467,10 @@ local function launch_lazygit(window, pane)
   end
 
   local ok = pcall(function()
+    -- Send Ctrl+U first to clear any partially typed input at the prompt,
+    -- preventing the command from being appended to existing line content.
     window:perform_action(
-      wezterm.action.SendString(lazygit_cmd .. "\r"),
+      wezterm.action.SendString("\x15" .. lazygit_cmd .. "\r"),
       pane
     )
   end)
