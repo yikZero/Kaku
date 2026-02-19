@@ -140,7 +140,7 @@ impl FontLocator for CoreTextFontLocator {
                 CTFontCreateForString(
                     menlo.as_concrete_TypeRef(),
                     text.as_concrete_TypeRef(),
-                    CFRange::init(0, 1),
+                    CFRange::init(0, c.len_utf16() as isize),
                 )
             };
 

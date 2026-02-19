@@ -31,7 +31,8 @@ use ::window::*;
 use anyhow::{anyhow, ensure, Context};
 use config::keyassignment::{
     Confirmation, KeyAssignment, LauncherActionArgs, PaneDirection, PaneEncoding, Pattern,
-    PromptInputLine, QuickSelectArguments, RotationDirection, SpawnCommand, SplitSize,
+    PromptInputLine, QuickSelectArguments, RotationDirection, SpawnCommand, SpawnTabDomain,
+    SplitSize,
 };
 use config::window::WindowLevel;
 use config::{
@@ -3053,7 +3054,14 @@ impl TermWindow {
             }
             EmitEvent(name) => {
                 if name == "update-kaku" || name == "run-kaku-update" {
-                    pane.writer().write_all(b"kaku update\n")?;
+                    self.spawn_command(
+                        &SpawnCommand {
+                            args: Some(vec!["kaku".to_string(), "update".to_string()]),
+                            domain: SpawnTabDomain::DomainName("local".to_string()),
+                            ..Default::default()
+                        },
+                        SpawnWhere::NewWindow,
+                    );
                 } else if name == "run-kaku-cli" {
                     pane.writer().write_all(b"kaku\n")?;
                 } else if name == "run-kaku-ai-config" {
