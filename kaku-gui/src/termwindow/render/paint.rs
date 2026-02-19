@@ -251,8 +251,8 @@ impl crate::TermWindow {
                     } else {
                         tab_bar_height
                     };
-                let bottom_fill_height = padding_bottom + border.bottom.get() as f32;
-                let bottom_reserved_for_right_strip = bottom_fill_height
+                let bottom_fill_height = padding_bottom
+                    + border.bottom.get() as f32
                     + if self.config.tab_bar_at_bottom {
                         tab_bar_height
                     } else {
@@ -292,10 +292,9 @@ impl crate::TermWindow {
                 if right_fill_width > 0.0 {
                     let clamped_width = right_fill_width.min(window_width);
                     let right_fill_y = top_fill_height.min(window_height);
-                    let right_fill_height = (window_height
-                        - right_fill_y
-                        - bottom_reserved_for_right_strip.min(window_height))
-                    .max(0.0);
+                    let right_fill_height =
+                        (window_height - right_fill_y - bottom_fill_height.min(window_height))
+                            .max(0.0);
                     self.filled_rectangle(
                         &mut layers,
                         0,
