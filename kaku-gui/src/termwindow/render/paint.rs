@@ -373,18 +373,19 @@ impl crate::TermWindow {
             if pos.is_active && num_panes > 1 {
                 let cell_width = self.render_metrics.cell_size.width as f32;
                 let cell_height = self.render_metrics.cell_size.height as f32;
-                let (padding_left, _padding_top) = self.padding_left_top();
+                let (padding_left, padding_top) = self.padding_left_top();
                 let border = self.get_os_border();
                 let tab_bar_height = if self.show_tab_bar {
                     self.tab_bar_pixel_height().unwrap_or(0.)
                 } else {
                     0.
                 };
-                let top_pixel_y = if self.config.tab_bar_at_bottom {
+                let top_bar_height = if self.config.tab_bar_at_bottom {
                     0.0
                 } else {
                     tab_bar_height
-                } + border.top.get() as f32;
+                };
+                let top_pixel_y = top_bar_height + padding_top + border.top.get() as f32;
 
                 let x = padding_left
                     + border.left.get() as f32
@@ -405,17 +406,22 @@ impl crate::TermWindow {
 
         // Draw dot indicator for the active pane when split
         if let Some((dot_x, dot_y, is_top_pane)) = active_pane_top_right {
-            let cell_height = self.render_metrics.cell_size.height as f32;
-            // Size and margin scale with the current font's cell height so the
-            // indicator looks consistent regardless of font size or display DPI.
-            let dot_size = (cell_height * 0.6).round();
+            const DOT_SIZE: f32 = 10.0;
             const DOT_ALPHA: f32 = 0.5;
-            // Top pane: 2.5 cells below the pane top (clears the tab bar).
-            // Lower panes: 3.5 cells below to stay clear of the split line.
-            let margin_top = if is_top_pane {
-                cell_height * 2.5
+            const RIGHT_INSET: f32 = 3.0;
+            const TOP_PANE_MARGIN_WITH_TAB_BAR: f32 = 24.0;
+            const TOP_PANE_MARGIN_NO_TAB_BAR: f32 = 14.0;
+            const LOWER_PANE_MARGIN: f32 = 20.0;
+
+            let top_pane_margin = if self.show_tab_bar && !self.config.tab_bar_at_bottom {
+                TOP_PANE_MARGIN_WITH_TAB_BAR
             } else {
-                cell_height * 3.5
+                TOP_PANE_MARGIN_NO_TAB_BAR
+            };
+            let margin_top = if is_top_pane {
+                top_pane_margin
+            } else {
+                LOWER_PANE_MARGIN
             };
             let dot_color = self.palette().cursor_bg.to_linear().mul_alpha(DOT_ALPHA);
 
@@ -431,10 +437,10 @@ impl crate::TermWindow {
             self.poly_quad(
                 &mut layers,
                 2,
-                euclid::point2(dot_x - dot_size, dot_y + margin_top),
+                euclid::point2(dot_x - DOT_SIZE - RIGHT_INSET, dot_y + margin_top),
                 CIRCLE_POLY,
                 1,
-                euclid::size2(dot_size, dot_size),
+                euclid::size2(DOT_SIZE, DOT_SIZE),
                 dot_color,
             )
             .context("active pane indicator")?;

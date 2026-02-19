@@ -43,26 +43,73 @@ ensure_homebrew_installation() {
 
 resolved_tool_path() {
 	local tool_name="$1"
-	command -v "$tool_name" 2>/dev/null || true
+	if command -v "$tool_name" >/dev/null 2>&1; then
+		command -v "$tool_name"
+		return 0
+	fi
+
+	for candidate in "/opt/homebrew/bin/$tool_name" "/usr/local/bin/$tool_name"; do
+		if [[ -x "$candidate" ]]; then
+			echo "$candidate"
+			return 0
+		fi
+	done
+
+	return 1
 }
 
 is_legacy_tool_active() {
 	local tool_name="$1"
 	local resolved
-	resolved="$(resolved_tool_path "$tool_name")"
+	resolved="$(resolved_tool_path "$tool_name" 2>/dev/null || true)"
 	[[ "$resolved" == "$USER_BIN_DIR/$tool_name" ]]
+}
+
+is_brew_formula_installed() {
+	local formula_name="$1"
+
+	if [[ -z "$BREW_BIN" ]]; then
+		BREW_BIN="$(resolve_brew_bin 2>/dev/null || true)"
+	fi
+
+	if [[ -z "$BREW_BIN" ]]; then
+		return 1
+	fi
+
+	"$BREW_BIN" list --formula --versions "$formula_name" >/dev/null 2>&1
+}
+
+should_install_formula() {
+	local tool_name="$1"
+	local formula_name="$2"
+	local allow_legacy="${3:-0}"
+
+	if resolved_tool_path "$tool_name" >/dev/null 2>&1; then
+		if [[ "$allow_legacy" == "1" ]] && is_legacy_tool_active "$tool_name"; then
+			return 0
+		fi
+		return 1
+	fi
+
+	# PATH can be minimal in non-interactive launch contexts.
+	# If brew already has this formula installed, skip reinstall.
+	if is_brew_formula_installed "$formula_name"; then
+		return 1
+	fi
+
+	return 0
 }
 
 collect_missing_tools() {
 	MISSING_TOOLS=()
 
-	if ! command -v starship >/dev/null 2>&1 || is_legacy_tool_active "starship"; then
+	if should_install_formula "starship" "starship" 1; then
 		MISSING_TOOLS+=("starship")
 	fi
-	if ! command -v delta >/dev/null 2>&1 || is_legacy_tool_active "delta"; then
+	if should_install_formula "delta" "git-delta" 1; then
 		MISSING_TOOLS+=("git-delta")
 	fi
-	if ! command -v lazygit >/dev/null 2>&1; then
+	if should_install_formula "lazygit" "lazygit" 0; then
 		MISSING_TOOLS+=("lazygit")
 	fi
 }

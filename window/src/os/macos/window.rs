@@ -64,8 +64,6 @@ const NSViewLayerContentsRedrawDuringViewResize: NSInteger = 2;
 const FULLSCREEN_ENTER_HIDE_CONTENT_MS: u64 = 30;
 const FULLSCREEN_EXIT_HIDE_CONTENT_MS: u64 = 20;
 const ZOOM_HIDE_CONTENT_MS: u64 = 20;
-const NATIVE_EXIT_HIDE_CONTENT_MS: u64 = 50;
-const NATIVE_EXIT_POST_HIDE_CONTENT_MS: u64 = 20;
 const MOVE_PERSIST_DELAY_SECS: f64 = 0.35;
 
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -1343,15 +1341,9 @@ impl WindowOps for Window {
                     match view.native_fullscreen_target.get() {
                         // Enter fullscreen: keep hidden for whole transition to avoid text scale pop.
                         Some(true) => return true,
-                        // Exit fullscreen: reveal sooner so content comes back faster.
-                        Some(false) => {
-                            if let Some(until) = view.transition_hide_until.get() {
-                                if Instant::now() < until {
-                                    return true;
-                                }
-                                view.transition_hide_until.set(None);
-                            }
-                        }
+                        // Exit fullscreen: avoid showing a rectangular placeholder
+                        // during the restore animation.
+                        Some(false) => view.transition_hide_until.set(None),
                         None => return true,
                     }
                 }
@@ -1497,7 +1489,6 @@ impl WindowInner {
                     .native_fullscreen_transition_start
                     .set(Some(Instant::now()));
             }
-            self.arm_transition_content_hide(NATIVE_EXIT_HIDE_CONTENT_MS, "native_pre_exit", true);
             self.toggle_native_fullscreen();
             true
         } else {
@@ -2682,25 +2673,6 @@ impl WindowView {
         }
     }
 
-    fn schedule_transition_unhide_repaint(window_id: usize, duration_ms: u64) {
-        promise::spawn::spawn(async move {
-            async_io::Timer::after(Duration::from_millis(duration_ms)).await;
-            Connection::with_window_inner(window_id, move |inner| {
-                if let Some(window_view) = WindowView::get_this(unsafe { &**inner.view }) {
-                    let mut state = window_view.inner.borrow_mut();
-                    state.paint_throttled = false;
-                    state.invalidated = true;
-                    state.events.dispatch(WindowEvent::NeedRepaint);
-                }
-                unsafe {
-                    let _: () = msg_send![*inner.view, setNeedsDisplay: YES];
-                }
-                Ok(())
-            });
-        })
-        .detach();
-    }
-
     // Called by the inputContext manager when the IME processes events.
     // We need to translate the selector back into appropriate key
     // sequences
@@ -3814,20 +3786,8 @@ impl WindowView {
             this.native_fullscreen_transition_active.set(true);
             this.native_fullscreen_target.set(Some(false));
             this.native_fullscreen_transition_start.set(Some(now));
+            this.transition_hide_until.set(None);
             this.inner.borrow_mut().live_resizing = true;
-
-            // Native exit can be triggered by multiple entry points.
-            // Arm the same short hide window here so all paths stay consistent.
-            let should_arm_hide = this
-                .transition_hide_until
-                .get()
-                .map(|until| until <= now)
-                .unwrap_or(true);
-            if should_arm_hide {
-                this.transition_hide_until.set(Some(
-                    now + Duration::from_millis(NATIVE_EXIT_HIDE_CONTENT_MS),
-                ));
-            }
 
             if let Ok(mut inner) = this.inner.try_borrow_mut() {
                 inner.paint_throttled = false;
@@ -3847,13 +3807,9 @@ impl WindowView {
     extern "C" fn did_exit_fullscreen(this: &mut Object, _sel: Sel, _notification: id) {
         let view_id = this as *mut Object;
         if let Some(this) = Self::get_this(this) {
-            let window_id = this.inner.borrow().window_id;
             this.native_fullscreen_transition_active.set(false);
             this.native_fullscreen_target.set(None);
-            this.transition_hide_until.set(Some(
-                Instant::now() + Duration::from_millis(NATIVE_EXIT_POST_HIDE_CONTENT_MS),
-            ));
-            Self::schedule_transition_unhide_repaint(window_id, NATIVE_EXIT_POST_HIDE_CONTENT_MS);
+            this.transition_hide_until.set(None);
             if let Ok(mut inner) = this.inner.try_borrow_mut() {
                 inner.live_resizing = true;
             }
