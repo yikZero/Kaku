@@ -19,6 +19,7 @@ use wezterm_gui_subcommands::*;
 
 mod ai_config;
 mod asciicast;
+mod auto_cmd;
 mod cli;
 mod config_cmd;
 mod init;
@@ -155,6 +156,13 @@ enum SubCommand {
         about = "Manage AI coding tools configuration (Claude Code, OpenCode, OpenClaw)"
     )]
     Ai(ai_config::AiConfigCommand),
+
+    #[command(
+        name = "auto",
+        visible_alias = "fix",
+        about = "Configure Kaku built-in AI capabilities"
+    )]
+    Auto(auto_cmd::AutoCommand),
 }
 
 use termwiz::escape::osc::{
@@ -779,6 +787,7 @@ fn run() -> anyhow::Result<()> {
         SubCommand::Init(cmd) => cmd.run(),
         SubCommand::Reset(cmd) => cmd.run(),
         SubCommand::Ai(cmd) => cmd.run(),
+        SubCommand::Auto(cmd) => cmd.run(),
     }
 }
 
@@ -812,11 +821,12 @@ fn select_main_menu_command() -> anyhow::Result<SubCommand> {
     println!("  3. init     Initialize shell integration");
     println!("  4. reset    Remove Kaku shell integration and managed defaults");
     println!("  5. ai       Manage AI coding tools configuration");
+    println!("  6. auto     Configure Kaku built-in AI settings");
     println!("  q. quit");
     println!();
 
     loop {
-        print!("Select option [1-5/q]: ");
+        print!("Select option [1-6/q]: ");
         std::io::stdout().flush().context("flush stdout")?;
 
         let mut input = String::new();
@@ -830,9 +840,12 @@ fn select_main_menu_command() -> anyhow::Result<SubCommand> {
             "3" | "init" => return Ok(SubCommand::Init(init::InitCommand::default())),
             "4" | "reset" => return Ok(SubCommand::Reset(reset::ResetCommand::default())),
             "5" | "ai" => return Ok(SubCommand::Ai(ai_config::AiConfigCommand::default())),
+            "6" | "auto" | "fix" => {
+                return Ok(SubCommand::Auto(auto_cmd::AutoCommand::default()));
+            }
             "q" | "quit" | "exit" => std::process::exit(0),
             _ => {
-                println!("Invalid option. Enter 1, 2, 3, 4, 5, or q.");
+                println!("Invalid option. Enter 1, 2, 3, 4, 5, 6, or q.");
             }
         }
     }

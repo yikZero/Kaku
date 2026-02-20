@@ -2522,6 +2522,7 @@ dependencies = [
  "termwiz",
  "termwiz-funcs",
  "textwrap",
+ "toml 0.8.23",
  "umask",
  "url",
  "wezterm-client",
