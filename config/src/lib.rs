@@ -591,8 +591,7 @@ fn config_dirs_from(
     xdg_config_home: Option<OsString>,
     #[cfg(unix)] xdg_config_dirs: Option<OsString>,
 ) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    dirs.push(xdg_config_home_from(home_dir, xdg_config_home));
+    let mut dirs = vec![xdg_config_home_from(home_dir, xdg_config_home)];
 
     #[cfg(unix)]
     if let Some(d) = xdg_config_dirs.filter(|value| !value.is_empty()) {
@@ -665,6 +664,18 @@ mod tests {
     fn missing_xdg_config_dirs_returns_primary_only() {
         let home = PathBuf::from("/tmp/kaku-home");
         let dirs = config_dirs_from(&home, Some(OsString::from("/custom/config")), None);
+        assert_eq!(dirs, vec![PathBuf::from("/custom/config").join("kaku")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_xdg_config_dirs_returns_primary_only() {
+        let home = PathBuf::from("/tmp/kaku-home");
+        let dirs = config_dirs_from(
+            &home,
+            Some(OsString::from("/custom/config")),
+            Some(OsString::new()),
+        );
         assert_eq!(dirs, vec![PathBuf::from("/custom/config").join("kaku")]);
     }
 }
