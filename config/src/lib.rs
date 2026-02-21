@@ -577,23 +577,96 @@ return config
 "#
 }
 
-fn xdg_config_home() -> PathBuf {
-    match std::env::var_os("XDG_CONFIG_HOME").map(|s| PathBuf::from(s).join("kaku")) {
-        Some(p) => p,
-        None => HOME_DIR.join(".config").join("kaku"),
-    }
+fn xdg_config_home_from(home_dir: &Path, xdg_config_home: Option<OsString>) -> PathBuf {
+    // Normalize empty env values to "unset" to preserve HOME/.config fallback behavior.
+    xdg_config_home
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir.join(".config"))
+        .join("kaku")
 }
 
-fn config_dirs() -> Vec<PathBuf> {
+fn config_dirs_from(
+    home_dir: &Path,
+    xdg_config_home: Option<OsString>,
+    #[cfg(unix)] xdg_config_dirs: Option<OsString>,
+) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    dirs.push(xdg_config_home());
+    dirs.push(xdg_config_home_from(home_dir, xdg_config_home));
 
     #[cfg(unix)]
-    if let Some(d) = std::env::var_os("XDG_CONFIG_DIRS") {
-        dirs.extend(std::env::split_paths(&d).map(|s| PathBuf::from(s).join("kaku")));
+    if let Some(d) = xdg_config_dirs.filter(|value| !value.is_empty()) {
+        dirs.extend(
+            std::env::split_paths(&d)
+                // `XDG_CONFIG_DIRS` may contain empty segments (e.g. `::`).
+                .filter(|path| !path.as_os_str().is_empty())
+                .map(|path| path.join("kaku")),
+        );
     }
 
     dirs
+}
+
+fn config_dirs() -> Vec<PathBuf> {
+    config_dirs_from(
+        &HOME_DIR,
+        std::env::var_os("XDG_CONFIG_HOME"),
+        #[cfg(unix)]
+        std::env::var_os("XDG_CONFIG_DIRS"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_xdg_config_home_uses_default_home_config_dir() {
+        let home = PathBuf::from("/tmp/kaku-home");
+        let path = xdg_config_home_from(&home, Some(OsString::new()));
+        assert_eq!(path, home.join(".config").join("kaku"));
+    }
+
+    #[test]
+    fn missing_xdg_config_home_uses_default_home_config_dir() {
+        let home = PathBuf::from("/tmp/kaku-home");
+        let path = xdg_config_home_from(&home, None);
+        assert_eq!(path, home.join(".config").join("kaku"));
+    }
+
+    #[test]
+    fn valid_xdg_config_home_is_used() {
+        let home = PathBuf::from("/tmp/kaku-home");
+        let path = xdg_config_home_from(&home, Some(OsString::from("/custom/config")));
+        assert_eq!(path, PathBuf::from("/custom/config").join("kaku"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_xdg_config_dirs_entries_are_ignored() {
+        let home = PathBuf::from("/tmp/kaku-home");
+        let dirs = config_dirs_from(
+            &home,
+            Some(OsString::new()),
+            Some(OsString::from("/etc/xdg::/usr/local/etc/xdg")),
+        );
+        assert_eq!(
+            dirs,
+            vec![
+                home.join(".config").join("kaku"),
+                PathBuf::from("/etc/xdg").join("kaku"),
+                PathBuf::from("/usr/local/etc/xdg").join("kaku"),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_xdg_config_dirs_returns_primary_only() {
+        let home = PathBuf::from("/tmp/kaku-home");
+        let dirs = config_dirs_from(&home, Some(OsString::from("/custom/config")), None);
+        assert_eq!(dirs, vec![PathBuf::from("/custom/config").join("kaku")]);
+    }
 }
 
 pub fn set_config_file_override(path: &Path) {
