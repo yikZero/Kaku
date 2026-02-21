@@ -139,7 +139,7 @@ impl LauncherArgs {
             for dom in domains.into_iter() {
                 let name = dom.domain_name();
                 let label = dom.domain_label().await;
-                let label = if name == label || label == "" {
+                let label = if name == label || label.is_empty() {
                     format!("domain `{}`", name)
                 } else {
                     format!("domain `{}` - {}", name, label)
@@ -355,7 +355,7 @@ impl LauncherState {
                     continue;
                 }
                 self.entries.push(Entry {
-                    label: format!("{}. {}", cmd.brief, cmd.doc),
+                    label: cmd.brief.to_string(),
                     action: cmd.action,
                 });
             }
@@ -385,7 +385,7 @@ impl LauncherState {
                 }
 
                 let label = match derive_command_from_key_assignment(&entry.action) {
-                    Some(cmd) => format!("{}. {}", cmd.brief, cmd.doc),
+                    Some(cmd) => cmd.brief.to_string(),
                     None => format!(
                         "{:?} ({} {})",
                         entry.action,

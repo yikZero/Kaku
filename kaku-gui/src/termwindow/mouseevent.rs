@@ -120,6 +120,55 @@ impl super::TermWindow {
 
         self.last_mouse_coords = (x, y);
 
+        // Keep modal focus exclusive: forward all mouse events to it and stop
+        // routing into pane/tab UI while active.
+        if let Some(modal) = self.get_modal() {
+            let modal_event = wezterm_term::MouseEvent {
+                kind: match event.kind {
+                    WMEK::Move => TMEK::Move,
+                    WMEK::VertWheel(_) | WMEK::HorzWheel(_) | WMEK::Press(_) => TMEK::Press,
+                    WMEK::Release(_) => TMEK::Release,
+                },
+                button: match event.kind {
+                    WMEK::Release(ref press) | WMEK::Press(ref press) => mouse_press_to_tmb(press),
+                    WMEK::Move => {
+                        if event.mouse_buttons == WMB::LEFT {
+                            TMB::Left
+                        } else if event.mouse_buttons == WMB::RIGHT {
+                            TMB::Right
+                        } else if event.mouse_buttons == WMB::MIDDLE {
+                            TMB::Middle
+                        } else {
+                            TMB::None
+                        }
+                    }
+                    WMEK::VertWheel(amount) => {
+                        if amount > 0 {
+                            TMB::WheelUp(amount as usize)
+                        } else {
+                            TMB::WheelDown((-amount) as usize)
+                        }
+                    }
+                    WMEK::HorzWheel(amount) => {
+                        if amount > 0 {
+                            TMB::WheelLeft(amount as usize)
+                        } else {
+                            TMB::WheelRight((-amount) as usize)
+                        }
+                    }
+                },
+                x,
+                y,
+                x_pixel_offset,
+                y_pixel_offset,
+                modifiers: event.modifiers,
+            };
+            if let Err(err) = modal.mouse_event(modal_event, self) {
+                log::error!("modal mouse event: {err:#}");
+            }
+            return;
+        }
+
         let mut capture_mouse = false;
 
         match event.kind {
@@ -601,7 +650,9 @@ impl super::TermWindow {
             WMEK::Press(MousePress::Left) => match item {
                 TabBarItem::Tab { tab_idx, active } => {
                     if !active {
-                        self.activate_tab(tab_idx as isize).ok();
+                        if let Err(err) = self.activate_tab(tab_idx as isize) {
+                            log::debug!("activate_tab({tab_idx}) failed: {err:#}");
+                        }
                     }
                 }
                 TabBarItem::NewTabButton { .. } => {
@@ -695,8 +746,9 @@ impl super::TermWindow {
             },
             WMEK::VertWheel(n) => {
                 if self.config.mouse_wheel_scrolls_tabs {
-                    self.activate_tab_relative(if n < 1 { 1 } else { -1 }, true)
-                        .ok();
+                    if let Err(err) = self.activate_tab_relative(if n < 1 { 1 } else { -1 }, true) {
+                        log::debug!("activate_tab_relative on wheel failed: {err:#}");
+                    }
                 }
             }
             _ => {}
@@ -1154,7 +1206,9 @@ impl super::TermWindow {
                 };
 
                 if let Some(action) = self.input_map.lookup_mouse(event_trigger_type, mouse_mods) {
-                    self.perform_key_assignment(&pane, &action).ok();
+                    if let Err(err) = self.perform_key_assignment(&pane, &action) {
+                        log::debug!("mouse assignment failed: {err:#}");
+                    }
                     return;
                 }
             }
@@ -1204,7 +1258,9 @@ impl super::TermWindow {
         if allow_action
             && !(self.config.swallow_mouse_click_on_pane_focus && is_click_to_focus_pane)
         {
-            pane.mouse_event(mouse_event).ok();
+            if let Err(err) = pane.mouse_event(mouse_event) {
+                log::debug!("forwarding mouse event to pane failed: {err:#}");
+            }
         }
 
         match event.kind {

@@ -2,37 +2,54 @@ use crate::commands::{CommandDef, ExpandedCommand};
 use crate::overlay::selector::{matcher_pattern, matcher_score};
 use crate::termwindow::box_model::*;
 use crate::termwindow::modal::Modal;
-use crate::termwindow::render::corners::{
-    BOTTOM_LEFT_ROUNDED_CORNER, BOTTOM_RIGHT_ROUNDED_CORNER, TOP_LEFT_ROUNDED_CORNER,
-    TOP_RIGHT_ROUNDED_CORNER,
-};
-use crate::termwindow::{DimensionContext, GuiWin, TermWindow};
+use crate::termwindow::{DimensionContext, TermWindow};
 use crate::utilsprites::RenderMetrics;
 use config::keyassignment::KeyAssignment;
 use config::Dimension;
 use frecency::Frecency;
-use luahelper::{from_lua_value_dynamic, impl_lua_conversion_dynamic};
-use mux_lua::MuxPane;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
 use std::cell::{Ref, RefCell};
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::path::PathBuf;
-use termwiz::nerdfonts::NERD_FONTS;
-use wezterm_dynamic::{FromDynamic, ToDynamic};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use wezterm_term::{KeyCode, KeyModifiers, MouseEvent};
 use window::color::LinearRgba;
-use window::Modifiers;
+use window::WindowOps;
+
+// Kaku theme colors for Command Palette
+const KAKU_BG: LinearRgba = LinearRgba::with_components(0.082, 0.078, 0.106, 0.95); // #15141b with opacity
+const KAKU_FG: LinearRgba = LinearRgba::with_components(0.929, 0.925, 0.933, 1.0); // #edecee
+const KAKU_ACCENT: LinearRgba = LinearRgba::with_components(0.635, 0.467, 1.0, 1.0); // #a277ff
+const KAKU_SELECTION_BG: LinearRgba = LinearRgba::with_components(0.161, 0.149, 0.235, 1.0); // #29263c
+const KAKU_DIM_FG: LinearRgba = LinearRgba::with_components(0.420, 0.420, 0.420, 1.0); // #6b6b6b
+const KAKU_BORDER: LinearRgba = LinearRgba::with_components(0.2, 0.18, 0.28, 0.6);
 
 struct MatchResults {
     selection: String,
     matches: Vec<usize>,
 }
 
+// Cache state to track when we need to rebuild the UI
+struct CacheState {
+    selection: String,
+    selected_row: usize,
+    top_row: usize,
+    max_rows: usize,
+    pixel_width: usize,
+    pixel_height: usize,
+}
+
+struct PaletteBounds {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
 pub struct CommandPalette {
     element: RefCell<Option<Vec<ComputedElement>>>,
+    cache_state: RefCell<Option<CacheState>>,
     selection: RefCell<String>,
     matches: RefCell<Option<MatchResults>>,
     selected_row: RefCell<usize>,
@@ -55,7 +72,12 @@ fn load_recents() -> anyhow::Result<Vec<Recent>> {
     let file_name = recent_file_name();
     let f = std::fs::File::open(&file_name)?;
     let mut recents: Vec<Recent> = serde_json::from_reader(f)?;
-    recents.sort_by(|a, b| b.frecency.score().partial_cmp(&a.frecency.score()).unwrap());
+    recents.sort_by(|a, b| {
+        b.frecency
+            .score()
+            .partial_cmp(&a.frecency.score())
+            .unwrap_or(Ordering::Equal)
+    });
     Ok(recents)
 }
 
@@ -79,94 +101,9 @@ fn save_recent(command: &ExpandedCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, FromDynamic, ToDynamic)]
-pub struct UserPaletteEntry {
-    pub brief: String,
-    pub doc: Option<String>,
-    pub action: KeyAssignment,
-    pub icon: Option<String>,
-}
-impl_lua_conversion_dynamic!(UserPaletteEntry);
-
-fn build_commands(
-    gui_window: GuiWin,
-    pane: Option<MuxPane>,
-    filter_copy_mode: bool,
-) -> Vec<ExpandedCommand> {
-    let mut commands = CommandDef::actions_for_palette_and_menubar(&config::configuration());
-
-    match config::run_immediate_with_lua_config(|lua| {
-        let mut entries: Vec<UserPaletteEntry> = vec![];
-
-        if let Some(lua) = lua {
-            let result = config::lua::emit_sync_callback(
-                &*lua,
-                ("augment-command-palette".to_string(), (gui_window, pane)),
-            )?;
-
-            if !matches!(&result, mlua::Value::Nil) {
-                entries = from_lua_value_dynamic(result)?;
-            }
-        }
-
-        Ok(entries)
-    }) {
-        Ok(entries) => {
-            for entry in entries {
-                commands.push(ExpandedCommand {
-                    brief: entry.brief.into(),
-                    doc: match entry.doc {
-                        Some(doc) => doc.into(),
-                        None => "".into(),
-                    },
-                    action: entry.action,
-                    keys: vec![],
-                    menubar: &[],
-                    icon: entry.icon.map(Cow::Owned),
-                });
-            }
-        }
-        Err(err) => {
-            log::warn!("augment-command-palette: {err:#}");
-        }
-    }
-
-    commands.retain(|cmd| {
-        if filter_copy_mode {
-            !matches!(cmd.action, KeyAssignment::CopyMode(_))
-        } else {
-            true
-        }
-    });
-
-    let mut scores: HashMap<&str, f64> = HashMap::new();
-    let recents = load_recents();
-    if let Ok(recents) = &recents {
-        for r in recents {
-            scores.insert(&r.brief, r.frecency.score());
-        }
-    }
-
-    commands.sort_by(|a, b| {
-        match (scores.get(&*a.brief), scores.get(&*b.brief)) {
-            // Want descending frecency score, so swap a<->b
-            // for the compare here
-            (Some(a), Some(b)) => match b.partial_cmp(a) {
-                Some(Ordering::Equal) | None => {}
-                Some(ordering) => return ordering,
-            },
-            (Some(_), None) => return Ordering::Less,
-            (None, Some(_)) => return Ordering::Greater,
-            (None, None) => {}
-        }
-
-        match a.menubar.cmp(&b.menubar) {
-            Ordering::Equal => a.brief.cmp(&b.brief),
-            ordering => ordering,
-        }
-    });
-
-    commands
+fn build_commands() -> Vec<ExpandedCommand> {
+    // Fast path: return static list without sorting or frecency
+    CommandDef::actions_for_palette_only(&config::configuration())
 }
 
 #[derive(Debug)]
@@ -216,26 +153,49 @@ fn compute_matches(selection: &str, commands: &[ExpandedCommand]) -> Vec<usize> 
 }
 
 impl CommandPalette {
-    pub fn new(term_window: &mut TermWindow) -> Self {
-        // Showing the CopyMode actions in the palette is useless
-        // if the CopyOverlay isn't active, so figure out if that
-        // is the case so that we can filter them out in build_commands.
-        let filter_copy_mode = term_window
-            .get_active_pane_or_overlay()
-            .map(|pane| {
-                pane.downcast_ref::<crate::termwindow::CopyOverlay>()
-                    .is_none()
-            })
-            .unwrap_or(true);
+    fn palette_bounds(term_window: &TermWindow, metrics: &RenderMetrics) -> PaletteBounds {
+        let top_bar_height = if term_window.show_tab_bar && !term_window.config.tab_bar_at_bottom {
+            term_window.tab_bar_pixel_height().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let (padding_left, padding_top) = term_window.padding_left_top();
+        let border = term_window.get_os_border();
 
-        let mux_pane = term_window
-            .get_active_pane_or_overlay()
-            .map(|pane| MuxPane(pane.pane_id()));
+        let content_x = padding_left + border.left.get() as f32;
+        let content_y = top_bar_height + padding_top + border.top.get() as f32;
 
-        let commands = build_commands(GuiWin::new(term_window), mux_pane, filter_copy_mode);
+        let content_width = term_window.terminal_size.pixel_width as f32;
+        let content_height = term_window.terminal_size.pixel_height as f32;
+
+        let cell_width = metrics.cell_size.width as f32;
+        let cell_height = metrics.cell_size.height as f32;
+
+        let max_width = (content_width - cell_width * 2.0).max(cell_width * 24.0);
+        let max_height = (content_height - cell_height * 2.0).max(cell_height * 12.0);
+
+        let palette_width_target = (content_width * 0.72).clamp(760.0, 1080.0).min(max_width);
+        let palette_cols = (palette_width_target / cell_width).floor().max(24.0);
+        let palette_width = (palette_cols * cell_width).min(max_width);
+        let palette_height = (content_height * 0.72).min(max_height);
+
+        let x = content_x + ((content_width - palette_width) / 2.0).max(0.0);
+        let y = content_y + ((content_height - palette_height) / 2.0).max(0.0);
+
+        PaletteBounds {
+            x,
+            y,
+            width: palette_width,
+            height: palette_height,
+        }
+    }
+
+    pub fn new(_term_window: &mut TermWindow) -> Self {
+        let commands = build_commands();
 
         Self {
             element: RefCell::new(None),
+            cache_state: RefCell::new(None),
             selection: RefCell::new(String::new()),
             commands,
             matches: RefCell::new(None),
@@ -259,165 +219,172 @@ impl CommandPalette {
             .command_palette_font()
             .expect("to resolve command palette font");
         let metrics = RenderMetrics::with_font_metrics(&font.metrics());
-
-        let top_bar_height = if term_window.show_tab_bar && !term_window.config.tab_bar_at_bottom {
-            term_window.tab_bar_pixel_height().unwrap()
+        let dimensions = term_window.dimensions;
+        let bounds = Self::palette_bounds(term_window, &metrics);
+        let epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| Duration::from_secs(0));
+        let blink_period_ms = 1000u128;
+        let on_phase_ms = 550u128;
+        let phase = epoch.as_millis() % blink_period_ms;
+        let cursor_visible = phase < on_phase_ms;
+        let ms_to_next_toggle = if cursor_visible {
+            on_phase_ms.saturating_sub(phase)
         } else {
-            0.
+            blink_period_ms.saturating_sub(phase)
         };
-        let (padding_left, padding_top) = term_window.padding_left_top();
-        let border = term_window.get_os_border();
-        let top_pixel_y = top_bar_height + padding_top + border.top.get() as f32;
+        term_window.update_next_frame_time(Some(
+            std::time::Instant::now()
+                + Duration::from_millis(ms_to_next_toggle.max(1).min(u128::from(u64::MAX)) as u64),
+        ));
 
-        let mut elements =
-            vec![
-                Element::new(&font, ElementContent::Text(format!("> {selection}_")))
-                    .colors(ElementColors {
+        // Search input area
+        let mut elements = vec![];
+
+        // Search box with explicit blinking caret so focus is obvious.
+        let mut search_row = vec![Element::new(&font, ElementContent::Text("⌘ ".to_string()))
+            .colors(ElementColors {
+                border: BorderColor::default(),
+                bg: LinearRgba::TRANSPARENT.into(),
+                text: KAKU_ACCENT.into(),
+            })];
+        let caret = if cursor_visible { "▏" } else { " " };
+        if selection.is_empty() {
+            search_row.push(
+                Element::new(&font, ElementContent::Text(caret.to_string())).colors(
+                    ElementColors {
                         border: BorderColor::default(),
                         bg: LinearRgba::TRANSPARENT.into(),
-                        text: term_window
-                            .config
-                            .command_palette_fg_color
-                            .to_linear()
-                            .into(),
-                    })
-                    .display(DisplayType::Block),
-            ];
+                        text: KAKU_ACCENT.into(),
+                    },
+                ),
+            );
+            search_row.push(
+                Element::new(
+                    &font,
+                    ElementContent::Text(" Type to search...".to_string()),
+                )
+                .colors(ElementColors {
+                    border: BorderColor::default(),
+                    bg: LinearRgba::TRANSPARENT.into(),
+                    text: KAKU_DIM_FG.into(),
+                }),
+            );
+        } else {
+            search_row.push(
+                Element::new(&font, ElementContent::Text(selection.to_string())).colors(
+                    ElementColors {
+                        border: BorderColor::default(),
+                        bg: LinearRgba::TRANSPARENT.into(),
+                        text: KAKU_FG.into(),
+                    },
+                ),
+            );
+            search_row.push(
+                Element::new(&font, ElementContent::Text(caret.to_string())).colors(
+                    ElementColors {
+                        border: BorderColor::default(),
+                        bg: LinearRgba::TRANSPARENT.into(),
+                        text: KAKU_ACCENT.into(),
+                    },
+                ),
+            );
+        }
 
-        for (display_idx, command) in matches
+        elements.push(
+            Element::new(&font, ElementContent::Children(search_row))
+                .colors(ElementColors {
+                    border: BorderColor::default(),
+                    bg: LinearRgba::TRANSPARENT.into(),
+                    text: KAKU_FG.into(),
+                })
+                .padding(BoxDimension {
+                    left: Dimension::Cells(1.0),
+                    right: Dimension::Cells(1.0),
+                    top: Dimension::Cells(0.6),
+                    bottom: Dimension::Cells(0.6),
+                })
+                .min_width(Some(Dimension::Percent(1.0)))
+                .display(DisplayType::Block),
+        );
+
+        // Separator line
+        elements.push(
+            Element::new(&font, ElementContent::Text("".to_string()))
+                .colors(ElementColors {
+                    border: BorderColor::new(KAKU_BORDER.into()),
+                    bg: LinearRgba::TRANSPARENT.into(),
+                    text: KAKU_FG.into(),
+                })
+                .display(DisplayType::Block)
+                .min_height(Some(Dimension::Pixels(1.0)))
+                .margin(BoxDimension {
+                    left: Dimension::Cells(0.6),
+                    right: Dimension::Cells(0.6),
+                    top: Dimension::Cells(0.),
+                    bottom: Dimension::Cells(0.),
+                }),
+        );
+
+        // Results list - only render visible rows for performance
+        let visible_commands: Vec<_> = matches
             .matches
             .iter()
             .map(|&idx| &commands[idx])
             .enumerate()
             .skip(top_row)
             .take(max_rows_on_screen)
-        {
-            let group = if command.menubar.is_empty() {
-                String::new()
+            .collect();
+
+        for (display_idx, command) in visible_commands {
+            let is_selected = display_idx == selected_row;
+
+            let bg: InheritableColor = if is_selected {
+                KAKU_SELECTION_BG.into()
             } else {
-                format!("{}: ", command.menubar.join(" | "))
+                LinearRgba::TRANSPARENT.into()
             };
 
-            let icon = match &command.icon {
-                Some(nf) => NERD_FONTS.get(nf.as_ref()).unwrap_or_else(|| {
-                    log::error!("nerdfont {nf} not found in NERD_FONTS");
-                    &'?'
-                }),
-                None => &' ',
-            };
+            let label = command.brief.to_string();
 
-            let solid_bg_color: InheritableColor = term_window
-                .config
-                .command_palette_bg_color
-                .to_linear()
-                .into();
-            let solid_fg_color: InheritableColor = term_window
-                .config
-                .command_palette_fg_color
-                .to_linear()
-                .into();
+            // Build row with better spacing
+            let mut row = vec![Element::new(
+                &font,
+                ElementContent::Text(format!("  {}", label)),
+            )];
 
-            let (bg, text) = if display_idx == selected_row {
-                (solid_fg_color.clone(), solid_bg_color.clone())
-            } else {
-                (LinearRgba::TRANSPARENT.into(), solid_fg_color.clone())
-            };
-
-            let (label_bg, label_text) = if display_idx == selected_row {
-                (solid_fg_color.clone(), solid_bg_color.clone())
-            } else {
-                (solid_bg_color.clone(), solid_fg_color.clone())
-            };
-
-            // DRY if the brief and doc are the same
-            let label = if command.doc.is_empty()
-                || command.brief.to_ascii_lowercase() == command.doc.to_ascii_lowercase()
-            {
-                format!("{group}{}", command.brief)
-            } else {
-                format!("{group}{}. {}", command.brief, command.doc)
-            };
-
-            let mut row = vec![
-                Element::new(&font, ElementContent::Text(icon.to_string()))
-                    .min_width(Some(Dimension::Cells(2.))),
-                Element::new(&font, ElementContent::Text(label)),
-            ];
-
-            if !command.keys.is_empty() {
-                let mut keys = command.keys.clone();
-
-                keys.sort_by(|(a_mods, a_key), (b_mods, b_key)| {
-                    fn score_mods(mods: &Modifiers) -> usize {
-                        let mut score: usize = mods.bits() as usize;
-                        // Prefer keys with CMD on macOS, but not on other systems,
-                        // where CMD tends to be reserved by the desktop environment
-                        if cfg!(target_os = "macos") && mods.contains(Modifiers::SUPER) {
-                            score += 1000;
-                        } else if !cfg!(target_os = "macos") && !mods.contains(Modifiers::SUPER) {
-                            score += 1000;
-                        }
-                        score
-                    }
-
-                    let a_mods = score_mods(a_mods);
-                    let b_mods = score_mods(b_mods);
-
-                    match b_mods.cmp(&a_mods) {
-                        Ordering::Equal => {}
-                        ordering => return ordering,
-                    }
-
-                    a_key.cmp(&b_key)
-                });
-
-                let separator = if term_window.config.ui_key_cap_rendering
-                    == ::window::UIKeyCapRendering::AppleSymbols
-                {
+            // Keyboard shortcut with better spacing
+            if let Some((mods, keycode)) = command.keys.first() {
+                let ui_rendering = term_window.config.ui_key_cap_rendering;
+                let separator = if ui_rendering == ::window::UIKeyCapRendering::AppleSymbols {
                     " "
                 } else {
-                    "-"
+                    " + "
+                };
+                let mod_string = mods.to_string_with_separator(::window::ModifierToStringArgs {
+                    separator,
+                    want_none: false,
+                    ui_key_cap_rendering: Some(ui_rendering),
+                });
+                let key_display = crate::inputmap::ui_key(keycode, ui_rendering);
+                let key_str = if mod_string.is_empty() {
+                    key_display
+                } else {
+                    format!("{}{}{}", mod_string, separator, key_display)
                 };
 
-                let mut keys = keys
-                    .into_iter()
-                    .map(|(mods, keycode)| {
-                        let mut mod_string =
-                            mods.to_string_with_separator(::window::ModifierToStringArgs {
-                                separator,
-                                want_none: false,
-                                ui_key_cap_rendering: Some(term_window.config.ui_key_cap_rendering),
-                            });
-                        if !mod_string.is_empty() {
-                            mod_string.push_str(separator);
-                        }
-                        let keycode = crate::inputmap::ui_key(
-                            &keycode,
-                            term_window.config.ui_key_cap_rendering,
-                        );
-                        format!("{mod_string}{keycode}")
-                    })
-                    .collect::<Vec<_>>();
-
-                keys.dedup();
-                keys.truncate(term_window.config.palette_max_key_assigments_for_action);
-
-                let key_label = keys.join(", ");
-
+                // Add visible spacing around shortcuts so key caps don't look crowded.
                 row.push(
-                    Element::new(&font, ElementContent::Text(key_label))
+                    Element::new(&font, ElementContent::Text(format!("  {}  ", key_str)))
                         .float(Float::Right)
-                        .padding(BoxDimension {
-                            left: Dimension::Cells(1.25),
-                            right: Dimension::Cells(0.5),
-                            top: Dimension::Cells(0.),
-                            bottom: Dimension::Cells(0.),
-                        })
-                        .zindex(10)
                         .colors(ElementColors {
                             border: BorderColor::default(),
-                            bg: label_bg.clone(),
-                            text: label_text.clone(),
+                            bg: LinearRgba::TRANSPARENT.into(),
+                            text: if is_selected {
+                                KAKU_FG.into()
+                            } else {
+                                KAKU_DIM_FG.into()
+                            },
                         }),
                 );
             }
@@ -427,89 +394,34 @@ impl CommandPalette {
                     .colors(ElementColors {
                         border: BorderColor::default(),
                         bg,
-                        text,
+                        text: KAKU_FG.into(),
                     })
                     .padding(BoxDimension {
-                        left: Dimension::Cells(0.25),
-                        right: Dimension::Cells(0.25),
-                        top: Dimension::Cells(0.),
-                        bottom: Dimension::Cells(0.),
+                        left: Dimension::Cells(0.6),
+                        right: Dimension::Cells(0.6),
+                        top: Dimension::Cells(0.4),
+                        bottom: Dimension::Cells(0.4),
                     })
-                    .min_width(Some(Dimension::Percent(1.)))
+                    .min_width(Some(Dimension::Percent(1.0)))
                     .display(DisplayType::Block),
             );
         }
 
-        let dimensions = term_window.dimensions;
-        let size = term_window.terminal_size;
-
-        // Avoid covering the entire width
-        let desired_width = (size.cols / 3).max(120).min(size.cols);
-
-        // Center it
-        let avail_pixel_width =
-            size.cols as f32 * term_window.render_metrics.cell_size.width as f32;
-        let desired_pixel_width =
-            desired_width as f32 * term_window.render_metrics.cell_size.width as f32;
-
+        // Centered floating container with 70% height
         let element = Element::new(&font, ElementContent::Children(elements))
             .colors(ElementColors {
-                border: BorderColor::new(
-                    term_window
-                        .config
-                        .command_palette_bg_color
-                        .to_linear()
-                        .into(),
-                ),
-                bg: term_window
-                    .config
-                    .command_palette_bg_color
-                    .to_linear()
-                    .into(),
-                text: term_window
-                    .config
-                    .command_palette_fg_color
-                    .to_linear()
-                    .into(),
-            })
-            .margin(BoxDimension {
-                left: Dimension::Cells(0.25),
-                right: Dimension::Cells(0.25),
-                top: Dimension::Cells(0.25),
-                bottom: Dimension::Cells(0.25),
+                border: BorderColor::new(KAKU_BORDER.into()),
+                bg: KAKU_BG.into(),
+                text: KAKU_FG.into(),
             })
             .padding(BoxDimension {
-                left: Dimension::Cells(0.25),
-                right: Dimension::Cells(0.25),
-                top: Dimension::Cells(0.25),
-                bottom: Dimension::Cells(0.25),
+                left: Dimension::Cells(0.),
+                right: Dimension::Cells(0.),
+                top: Dimension::Cells(0.4),
+                bottom: Dimension::Cells(0.4),
             })
             .border(BoxDimension::new(Dimension::Pixels(1.)))
-            .border_corners(Some(Corners {
-                top_left: SizedPoly {
-                    width: Dimension::Cells(0.25),
-                    height: Dimension::Cells(0.25),
-                    poly: TOP_LEFT_ROUNDED_CORNER,
-                },
-                top_right: SizedPoly {
-                    width: Dimension::Cells(0.25),
-                    height: Dimension::Cells(0.25),
-                    poly: TOP_RIGHT_ROUNDED_CORNER,
-                },
-                bottom_left: SizedPoly {
-                    width: Dimension::Cells(0.25),
-                    height: Dimension::Cells(0.25),
-                    poly: BOTTOM_LEFT_ROUNDED_CORNER,
-                },
-                bottom_right: SizedPoly {
-                    width: Dimension::Cells(0.25),
-                    height: Dimension::Cells(0.25),
-                    poly: BOTTOM_RIGHT_ROUNDED_CORNER,
-                },
-            }))
-            .min_width(Some(Dimension::Pixels(desired_pixel_width)));
-
-        let x_adjust = ((avail_pixel_width - padding_left) - desired_pixel_width) / 2.;
+            .min_width(Some(Dimension::Pixels(bounds.width)));
 
         let computed = term_window.compute_element(
             &LayoutContext {
@@ -523,12 +435,7 @@ impl CommandPalette {
                     pixel_max: dimensions.pixel_width as f32,
                     pixel_cell: metrics.cell_size.width as f32,
                 },
-                bounds: euclid::rect(
-                    padding_left + x_adjust,
-                    top_pixel_y,
-                    desired_pixel_width,
-                    size.rows as f32 * term_window.render_metrics.cell_size.height as f32,
-                ),
+                bounds: euclid::rect(bounds.x, bounds.y, bounds.width, bounds.height),
                 metrics: &metrics,
                 gl_state: term_window.render_state.as_ref().unwrap(),
                 zindex: 100,
@@ -544,18 +451,79 @@ impl CommandPalette {
         *self.top_row.borrow_mut() = 0;
     }
 
-    fn move_up(&self) {
-        let mut row = self.selected_row.borrow_mut();
-        *row = row.saturating_sub(1);
+    fn move_up(&self) -> bool {
+        self.move_by(-1)
+    }
 
-        let mut top_row = self.top_row.borrow_mut();
-        if *row < *top_row {
-            *top_row = *row;
+    fn move_down(&self) -> bool {
+        self.move_by(1)
+    }
+
+    fn match_count(&self) -> usize {
+        self.matches
+            .borrow()
+            .as_ref()
+            .map(|m| m.matches.len())
+            .unwrap_or_else(|| self.commands.len())
+    }
+
+    fn visible_rows(&self) -> usize {
+        (*self.max_rows_on_screen.borrow()).max(1)
+    }
+
+    fn scroll_margin(visible_rows: usize) -> usize {
+        if visible_rows <= 3 {
+            0
+        } else {
+            (visible_rows / 6).clamp(1, 3)
         }
     }
 
-    fn move_down(&self) {
-        let max_rows_on_screen = *self.max_rows_on_screen.borrow();
+    fn align_top_for_row(
+        row: usize,
+        current_top: usize,
+        visible_rows: usize,
+        limit: usize,
+    ) -> usize {
+        let window_rows = visible_rows.max(1);
+        let margin = Self::scroll_margin(window_rows);
+        let max_top = limit.saturating_sub(window_rows.saturating_sub(1));
+        let mut top = current_top.min(max_top);
+
+        let lower = top.saturating_add(margin);
+        let upper = top.saturating_add(window_rows.saturating_sub(1 + margin));
+
+        if row < lower {
+            top = row.saturating_sub(margin);
+        } else if row > upper {
+            top = row.saturating_sub(window_rows.saturating_sub(1 + margin));
+        }
+
+        top.min(max_top)
+    }
+
+    fn set_selected_row(&self, target_row: usize) -> bool {
+        let count = self.match_count();
+        let limit = count.saturating_sub(1);
+        let next_row = target_row.min(limit);
+
+        let current_row = *self.selected_row.borrow();
+        let current_top = *self.top_row.borrow();
+        let next_top = Self::align_top_for_row(next_row, current_top, self.visible_rows(), limit);
+
+        if next_row == current_row && next_top == current_top {
+            return false;
+        }
+
+        *self.selected_row.borrow_mut() = next_row;
+        *self.top_row.borrow_mut() = next_top;
+
+        // Clear element cache to trigger re-render with new selection.
+        self.element.borrow_mut().take();
+        true
+    }
+
+    fn move_by(&self, delta: isize) -> bool {
         let limit = self
             .matches
             .borrow()
@@ -563,12 +531,110 @@ impl CommandPalette {
             .map(|m| m.matches.len())
             .unwrap_or_else(|| self.commands.len())
             .saturating_sub(1);
-        let mut row = self.selected_row.borrow_mut();
-        *row = row.saturating_add(1).min(limit);
-        let mut top_row = self.top_row.borrow_mut();
-        if *row > *top_row + max_rows_on_screen - 1 {
-            *top_row = row.saturating_sub(max_rows_on_screen - 1);
+        let current_row = *self.selected_row.borrow();
+        let next_row = if delta < 0 {
+            current_row.saturating_sub(delta.unsigned_abs())
+        } else {
+            current_row.saturating_add(delta as usize)
         }
+        .min(limit);
+
+        self.set_selected_row(next_row)
+    }
+
+    fn move_page(&self, pages: isize) -> bool {
+        let step = self.visible_rows().saturating_sub(1).max(3) as isize;
+        self.move_by(step * pages)
+    }
+
+    fn jump_to_start(&self) -> bool {
+        self.set_selected_row(0)
+    }
+
+    fn jump_to_end(&self) -> bool {
+        let limit = self.match_count().saturating_sub(1);
+        self.set_selected_row(limit)
+    }
+
+    fn smooth_wheel_steps(lines: usize) -> isize {
+        let lines = lines.max(1) as f32;
+        // Compress large wheel deltas from touchpad inertia so motion feels smoother.
+        (lines.sqrt().round() as isize).clamp(1, 3)
+    }
+
+    fn activate_selected(&self, term_window: &mut TermWindow) -> bool {
+        let selected_idx = *self.selected_row.borrow();
+        let alias_idx = match self.matches.borrow().as_ref() {
+            None => return true,
+            Some(results) => match results.matches.get(selected_idx) {
+                Some(i) => *i,
+                None => return true,
+            },
+        };
+        let item = &self.commands[alias_idx];
+        if let Err(err) = save_recent(item) {
+            log::error!("Error while saving recents: {err:#}");
+        }
+        term_window.cancel_modal();
+
+        if let Some(pane) = term_window.get_active_pane_or_overlay() {
+            if let Err(err) = term_window.perform_key_assignment(&pane, &item.action) {
+                log::error!("Error while performing {item:?}: {err:#}");
+                term_window.show_toast(format!("Command failed: {}", err));
+            }
+        }
+        true
+    }
+
+    fn pick_row_from_point(
+        &self,
+        abs_x: f32,
+        abs_y: f32,
+        term_window: &mut TermWindow,
+    ) -> Option<usize> {
+        let clicked_idx = {
+            let element = self.element.borrow();
+            let root = element.as_ref()?.first()?;
+            if abs_x < root.bounds.min_x()
+                || abs_x > root.bounds.max_x()
+                || abs_y < root.bounds.min_y()
+                || abs_y > root.bounds.max_y()
+            {
+                return None;
+            }
+            let kids = match &root.content {
+                ComputedElementContent::Children(kids) => kids,
+                _ => return None,
+            };
+            kids.iter().position(|kid| {
+                abs_x >= kid.bounds.min_x()
+                    && abs_x <= kid.bounds.max_x()
+                    && abs_y >= kid.bounds.min_y()
+                    && abs_y <= kid.bounds.max_y()
+            })?
+        };
+
+        // 0 = search row, 1 = separator line, 2.. = result rows
+        if clicked_idx < 2 {
+            return None;
+        }
+        let top_row = *self.top_row.borrow();
+        let visible_idx = clicked_idx - 2;
+        let selected = top_row.saturating_add(visible_idx);
+        let limit = self
+            .matches
+            .borrow()
+            .as_ref()
+            .map(|m| m.matches.len())
+            .unwrap_or_else(|| self.commands.len())
+            .saturating_sub(1);
+        let selected = selected.min(limit);
+        *self.selected_row.borrow_mut() = selected;
+        self.element.borrow_mut().take();
+        if let Some(window) = term_window.window.as_ref() {
+            window.invalidate();
+        }
+        Some(selected)
     }
 }
 
@@ -581,7 +647,54 @@ impl Modal for CommandPalette {
         false
     }
 
-    fn mouse_event(&self, _event: MouseEvent, _term_window: &mut TermWindow) -> anyhow::Result<()> {
+    fn mouse_event(&self, event: MouseEvent, term_window: &mut TermWindow) -> anyhow::Result<()> {
+        let font = term_window
+            .fonts
+            .command_palette_font()
+            .expect("to resolve command palette font");
+        let metrics = RenderMetrics::with_font_metrics(&font.metrics());
+        let top_bar_height = if term_window.show_tab_bar && !term_window.config.tab_bar_at_bottom {
+            term_window.tab_bar_pixel_height().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let (padding_left, padding_top) = term_window.padding_left_top();
+        let border = term_window.get_os_border();
+        let content_x = padding_left + border.left.get() as f32;
+        let content_y = top_bar_height + padding_top + border.top.get() as f32;
+        let abs_x = content_x
+            + event.x as f32 * metrics.cell_size.width as f32
+            + event.x_pixel_offset as f32;
+        let abs_y = content_y
+            + event.y as f32 * metrics.cell_size.height as f32
+            + event.y_pixel_offset as f32;
+
+        match event.button {
+            wezterm_term::MouseButton::WheelUp(lines) => {
+                if self.move_by(-Self::smooth_wheel_steps(lines)) {
+                    if let Some(window) = term_window.window.as_ref() {
+                        window.invalidate();
+                    }
+                }
+            }
+            wezterm_term::MouseButton::WheelDown(lines) => {
+                if self.move_by(Self::smooth_wheel_steps(lines)) {
+                    if let Some(window) = term_window.window.as_ref() {
+                        window.invalidate();
+                    }
+                }
+            }
+            wezterm_term::MouseButton::Left => {
+                if event.kind == wezterm_term::MouseEventKind::Press
+                    && self
+                        .pick_row_from_point(abs_x, abs_y, term_window)
+                        .is_some()
+                {
+                    self.activate_selected(term_window);
+                }
+            }
+            _ => {}
+        }
         Ok(())
     }
 
@@ -591,60 +704,69 @@ impl Modal for CommandPalette {
         mods: KeyModifiers,
         term_window: &mut TermWindow,
     ) -> anyhow::Result<bool> {
+        let mut needs_invalidate = false;
         match (key, mods) {
             (KeyCode::Escape, KeyModifiers::NONE) | (KeyCode::Char('g'), KeyModifiers::CTRL) => {
                 term_window.cancel_modal();
             }
+            (KeyCode::PageUp, KeyModifiers::NONE) => {
+                needs_invalidate = self.move_page(-1);
+            }
+            (KeyCode::PageDown, KeyModifiers::NONE) => {
+                needs_invalidate = self.move_page(1);
+            }
+            (KeyCode::Home, KeyModifiers::NONE) | (KeyCode::Char('a'), KeyModifiers::CTRL) => {
+                needs_invalidate = self.jump_to_start();
+            }
+            (KeyCode::End, KeyModifiers::NONE) | (KeyCode::Char('e'), KeyModifiers::CTRL) => {
+                needs_invalidate = self.jump_to_end();
+            }
             (KeyCode::UpArrow, KeyModifiers::NONE) | (KeyCode::Char('p'), KeyModifiers::CTRL) => {
-                self.move_up();
+                needs_invalidate = self.move_up();
             }
             (KeyCode::DownArrow, KeyModifiers::NONE) | (KeyCode::Char('n'), KeyModifiers::CTRL) => {
-                self.move_down();
+                needs_invalidate = self.move_down();
+            }
+            (KeyCode::UpArrow, KeyModifiers::SHIFT) => {
+                needs_invalidate = self.move_by(-3);
+            }
+            (KeyCode::DownArrow, KeyModifiers::SHIFT) => {
+                needs_invalidate = self.move_by(3);
             }
             (KeyCode::Char(c), KeyModifiers::NONE) | (KeyCode::Char(c), KeyModifiers::SHIFT) => {
                 // Type to add to the selection
                 let mut selection = self.selection.borrow_mut();
                 selection.push(c);
                 self.updated_input();
+                needs_invalidate = true;
             }
             (KeyCode::Backspace, KeyModifiers::NONE) => {
                 // Backspace to edit the selection
                 let mut selection = self.selection.borrow_mut();
                 selection.pop();
                 self.updated_input();
+                needs_invalidate = true;
             }
             (KeyCode::Char('u'), KeyModifiers::CTRL) => {
                 // CTRL-u to clear the selection
                 let mut selection = self.selection.borrow_mut();
                 selection.clear();
                 self.updated_input();
+                needs_invalidate = true;
             }
             (KeyCode::Enter, KeyModifiers::NONE) => {
-                // Enter the selected character to the current pane
-                let selected_idx = *self.selected_row.borrow();
-                let alias_idx = match self.matches.borrow().as_ref() {
-                    None => return Ok(true),
-                    Some(results) => match results.matches.get(selected_idx) {
-                        Some(i) => *i,
-                        None => return Ok(true),
-                    },
-                };
-                let item = &self.commands[alias_idx];
-                if let Err(err) = save_recent(item) {
-                    log::error!("Error while saving recents: {err:#}");
-                }
-                term_window.cancel_modal();
-
-                if let Some(pane) = term_window.get_active_pane_or_overlay() {
-                    if let Err(err) = term_window.perform_key_assignment(&pane, &item.action) {
-                        log::error!("Error while performing {item:?}: {err:#}");
-                    }
-                }
+                self.activate_selected(term_window);
                 return Ok(true);
             }
-            _ => return Ok(false),
+            // Swallow unhandled keys while palette is open so input never falls through
+            // to the terminal pane.
+            _ => return Ok(true),
         }
-        term_window.invalidate_modal();
+        if needs_invalidate {
+            if let Some(window) = term_window.window.as_ref() {
+                window.invalidate();
+            }
+        }
         Ok(true)
     }
 
@@ -663,9 +785,16 @@ impl Modal for CommandPalette {
             .expect("to resolve char selection font");
         let metrics = RenderMetrics::with_font_metrics(&font.metrics());
 
-        let mut max_rows_on_screen = ((term_window.dimensions.pixel_height * 8 / 10)
-            / metrics.cell_size.height as usize)
-            - 2;
+        // Calculate max rows based on actual palette height, accounting for row paddings.
+        let bounds = Self::palette_bounds(term_window, &metrics);
+        let palette_height_px = bounds.height;
+        let cell_h = metrics.cell_size.height as f32;
+        let row_height = cell_h * 1.8; // cell + top/bottom padding (0.4 + 0.4)
+        let search_bar_h = cell_h * 2.2; // cell + top/bottom padding (0.6 + 0.6)
+        let overhead = search_bar_h + 1.0 + cell_h * 0.8; // search + separator + container padding
+        let available = palette_height_px - overhead;
+        let mut max_rows_on_screen = ((available / row_height).floor() as usize).max(5);
+
         if let Some(size) = term_window.config.command_palette_rows {
             max_rows_on_screen = max_rows_on_screen.min(size);
         }
@@ -680,20 +809,43 @@ impl Modal for CommandPalette {
                 selection: selection.to_string(),
                 matches: compute_matches(selection, &self.commands),
             });
-        };
+        }
         let matches = results.as_ref().unwrap();
 
-        if self.element.borrow().is_none() {
+        // Check if we need to rebuild the UI (selection, scroll position, or size changed)
+        let selected_row = *self.selected_row.borrow();
+        let top_row = *self.top_row.borrow();
+        let dims = term_window.dimensions;
+
+        let needs_rebuild = self.element.borrow().is_none()
+            || self.cache_state.borrow().as_ref().map_or(true, |state| {
+                state.selection != selection
+                    || state.selected_row != selected_row
+                    || state.top_row != top_row
+                    || state.max_rows != max_rows_on_screen
+                    || state.pixel_width != dims.pixel_width
+                    || state.pixel_height != dims.pixel_height
+            });
+
+        if needs_rebuild {
             let element = Self::compute(
                 term_window,
                 selection,
                 &self.commands,
                 matches,
                 max_rows_on_screen,
-                *self.selected_row.borrow(),
-                *self.top_row.borrow(),
+                selected_row,
+                top_row,
             )?;
             self.element.borrow_mut().replace(element);
+            self.cache_state.borrow_mut().replace(CacheState {
+                selection: selection.to_string(),
+                selected_row,
+                top_row,
+                max_rows: max_rows_on_screen,
+                pixel_width: dims.pixel_width,
+                pixel_height: dims.pixel_height,
+            });
         }
         Ok(Ref::map(self.element.borrow(), |v| {
             v.as_ref().unwrap().as_slice()
@@ -702,5 +854,6 @@ impl Modal for CommandPalette {
 
     fn reconfigure(&self, _term_window: &mut TermWindow) {
         self.element.borrow_mut().take();
+        self.cache_state.borrow_mut().take();
     }
 }

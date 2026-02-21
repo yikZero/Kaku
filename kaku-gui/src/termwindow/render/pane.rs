@@ -409,8 +409,12 @@ impl crate::TermWindow {
                         .map_or(0..0, |sel| sel.cols_for_row(stable_row, self.rectangular));
                     // Constrain to the pane width!
                     let selrange = selrange.start..selrange.end.min(self.dims.cols);
+                    let show_terminal_cursor = self.term_window.get_modal().is_none();
+                    let pane_is_active_for_cursor = self.pos.is_active && show_terminal_cursor;
 
-                    let (cursor, composing, password_input) = if self.cursor.y == stable_row {
+                    let (cursor, composing, password_input) = if pane_is_active_for_cursor
+                        && self.cursor.y == stable_row
+                    {
                         (
                             Some(CursorProperties {
                                 position: StableCursorPosition {
@@ -425,7 +429,7 @@ impl crate::TermWindow {
                                 cursor_border_color: self.cursor_border_color,
                                 cursor_is_default_color: self.cursor_is_default_color,
                             }),
-                            match (self.pos.is_active, &self.term_window.dead_key_status) {
+                            match (pane_is_active_for_cursor, &self.term_window.dead_key_status) {
                                 (true, DeadKeyStatus::Composing(composing)) => {
                                     Some(composing.to_string())
                                 }
@@ -455,7 +459,7 @@ impl crate::TermWindow {
                     let quad_key = LineQuadCacheKey {
                         pane_id: self.pane_id,
                         password_input,
-                        pane_is_active: self.pos.is_active,
+                        pane_is_active: pane_is_active_for_cursor,
                         config_generation: self.term_window.config.generation(),
                         shape_generation: self.term_window.shape_generation,
                         quad_generation: self.term_window.quad_generation,
@@ -502,7 +506,7 @@ impl crate::TermWindow {
                     let shape_key = LineToEleShapeCacheKey {
                         shape_hash,
                         shape_generation: quad_key.shape_generation,
-                        composing: if self.cursor.y == stable_row && self.pos.is_active {
+                        composing: if self.cursor.y == stable_row && pane_is_active_for_cursor {
                             if let DeadKeyStatus::Composing(composing) =
                                 &self.term_window.dead_key_status
                             {
@@ -531,7 +535,7 @@ impl crate::TermWindow {
                                 config: &self.term_window.config,
                                 cursor_border_color: self.cursor_border_color,
                                 foreground: self.foreground,
-                                is_active: self.pos.is_active,
+                                is_active: pane_is_active_for_cursor,
                                 pane: Some(&self.pos.pane),
                                 selection_fg: self.selection_fg,
                                 selection_bg: self.selection_bg,

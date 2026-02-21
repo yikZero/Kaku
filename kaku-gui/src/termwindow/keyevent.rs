@@ -269,22 +269,6 @@ impl super::TermWindow {
         }
 
         if is_down {
-            if only_key_bindings == OnlyKeyBindings::No {
-                if let Some(modal) = self.get_modal() {
-                    if let Key::Code(term_key) = self.win_key_code_to_termwiz_key_code(keycode) {
-                        match modal.key_down(term_key, raw_modifiers.remove_positional_mods(), self)
-                        {
-                            Ok(true) => return true,
-                            Ok(false) => {}
-                            Err(err) => {
-                                log::error!("Error dispatching key to modal: {err:#}");
-                                return true;
-                            }
-                        }
-                    }
-                }
-            }
-
             if let Some((entry, table_name)) = self.lookup_key(
                 pane,
                 &keycode,
@@ -366,19 +350,25 @@ impl super::TermWindow {
                             if self.config.debug_key_events {
                                 log::info!("win32: Encoded input as {:?}", encoded);
                             }
-                            pane.writer()
+                            if let Err(err) = pane
+                                .writer()
                                 .write_all(encoded.as_bytes())
                                 .context("sending win32-input-mode encoded data")
-                                .ok();
+                            {
+                                log::warn!("{err:#}");
+                            }
                             did_encode = true;
                         } else if let Some(encoded) = self.encode_kitty_input(&pane, &key_event) {
                             if self.config.debug_key_events {
                                 log::info!("kitty: Encoded input as {:?}", encoded);
                             }
-                            pane.writer()
+                            if let Err(err) = pane
+                                .writer()
                                 .write_all(encoded.as_bytes())
                                 .context("sending kitty encoded data")
-                                .ok();
+                            {
+                                log::warn!("{err:#}");
+                            }
                             did_encode = true;
                         }
                     };
@@ -456,6 +446,12 @@ impl super::TermWindow {
         if self.current_modifier_and_leds != modifier_and_leds {
             self.current_modifier_and_leds = modifier_and_leds;
             self.schedule_next_status_update();
+        }
+        // On macOS, RawKeyEvent is delivered before KeyEvent. If a modal is open,
+        // ignore raw-path keybinding processing so text cannot leak into the pane.
+        // KeyEvent handling will dispatch to the modal immediately after this.
+        if self.get_modal().is_some() {
+            return;
         }
 
         let pane = match self.get_active_pane_or_overlay() {
@@ -627,6 +623,30 @@ impl super::TermWindow {
         }
 
         let modifiers = window_key.modifiers;
+        if let Some(modal) = self.get_modal() {
+            if window_key.key_is_down {
+                let modal_mods = modifiers.remove_positional_mods();
+                match self.win_key_code_to_termwiz_key_code(&window_key.key) {
+                    Key::Code(key) => {
+                        if let Err(err) = modal.key_down(key, modal_mods, self) {
+                            log::error!("Error dispatching key to modal: {err:#}");
+                        }
+                    }
+                    Key::Composed(text) => {
+                        for c in text.chars() {
+                            if let Err(err) =
+                                modal.key_down(::termwiz::input::KeyCode::Char(c), modal_mods, self)
+                            {
+                                log::error!("Error dispatching composed key to modal: {err:#}");
+                                break;
+                            }
+                        }
+                    }
+                    Key::None => {}
+                }
+            }
+            return;
+        }
 
         if self.process_key(
             &pane,
@@ -662,13 +682,6 @@ impl super::TermWindow {
                         return;
                     }
                     self.key_table_state.did_process_key();
-                }
-
-                if let Some(modal) = self.get_modal() {
-                    if window_key.key_is_down {
-                        modal.key_down(key, modifiers, self).ok();
-                    }
-                    return;
                 }
 
                 let res = if let Some(encoded) = self.encode_win32_input(&pane, &window_key) {
@@ -735,7 +748,9 @@ impl super::TermWindow {
                 if self.config.debug_key_events {
                     log::info!("send to pane string={:?}", s);
                 }
-                pane.writer().write_all(s.as_bytes()).ok();
+                if let Err(err) = pane.writer().write_all(s.as_bytes()) {
+                    log::warn!("sending composed input failed: {err:#}");
+                }
                 self.maybe_scroll_to_bottom_for_input(&pane);
                 context.invalidate();
             }
@@ -768,7 +783,7 @@ impl super::TermWindow {
             WK::Char('\u{1b}') => KC::Escape,
             WK::RawCode(_) => return Key::None,
             WK::Physical(phys) => {
-                return self.win_key_code_to_termwiz_key_code(&phys.to_key_code())
+                return self.win_key_code_to_termwiz_key_code(&phys.to_key_code());
             }
 
             WK::Char(c) => KC::Char(*c),
