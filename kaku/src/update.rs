@@ -683,6 +683,41 @@ rollback() {
   fi
 }
 
+install_kaku_wrapper_fallback() {
+  local home_dir wrapper_path wrapper_dir
+  home_dir="${HOME:-}"
+  if [[ -z "$home_dir" ]]; then
+    return 1
+  fi
+
+  wrapper_path="$home_dir/.config/kaku/zsh/bin/kaku"
+  wrapper_dir="${wrapper_path%/*}"
+  /bin/mkdir -p "$wrapper_dir"
+
+  /bin/cat >"$wrapper_path" <<EOF
+#!/bin/bash
+set -euo pipefail
+
+if [[ -n "\${KAKU_BIN:-}" && -x "\${KAKU_BIN}" ]]; then
+  exec "\${KAKU_BIN}" "\$@"
+fi
+
+for candidate in \
+  "$TARGET_CLI" \
+  "/Applications/Kaku.app/Contents/MacOS/kaku" \
+  "\${HOME:-}/Applications/Kaku.app/Contents/MacOS/kaku"; do
+  if [[ -n "\$candidate" && -x "\$candidate" ]]; then
+    exec "\$candidate" "\$@"
+  fi
+done
+
+echo "kaku: Kaku.app not found. Expected /Applications/Kaku.app." >&2
+exit 127
+EOF
+
+  /bin/chmod 755 "$wrapper_path"
+}
+
 log "start apply update"
 /usr/bin/osascript -e 'display notification "Kaku is applying an update and will relaunch automatically." with title "Kaku Update"' >/dev/null 2>&1 || true
 
@@ -717,7 +752,16 @@ if [[ -d "$BACKUP_APP" ]]; then
 fi
 
 log "refresh shell integration"
-"$TARGET_CLI" init --update-only >/dev/null 2>&1 || true
+if "$TARGET_CLI" init --update-only >>"$LOG_FILE" 2>&1; then
+  log "shell integration refreshed"
+else
+  log "warning: failed to refresh shell integration via kaku init"
+  if install_kaku_wrapper_fallback >>"$LOG_FILE" 2>&1; then
+    log "installed fallback kaku wrapper at ~/.config/kaku/zsh/bin/kaku"
+  else
+    log "warning: failed to install fallback kaku wrapper"
+  fi
+fi
 
 log "relaunch app"
 sleep 2
