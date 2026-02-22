@@ -671,7 +671,9 @@ impl TermWindow {
             if let Some(assignment) = assignment {
                 if let Some(pane) = self.get_active_pane_or_overlay() {
                     if let Err(err) = self.perform_key_assignment(&pane, &assignment) {
-                        log::error!("Failed to perform Cmd+W assignment from close button: {err:#}");
+                        log::error!(
+                            "Failed to perform Cmd+W assignment from close button: {err:#}"
+                        );
                     }
                 } else {
                     self.close_current_tab(true);
