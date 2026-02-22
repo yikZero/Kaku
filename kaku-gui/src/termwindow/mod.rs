@@ -3166,16 +3166,16 @@ impl TermWindow {
                 } else if name == "kaku-toast-lazygit-dispatch-failed" {
                     self.show_toast("Lazygit: Dispatch failed".to_string());
                 } else if name == "kaku-toast-ai-analyzing" {
-                    let message = "Kaku AI checking error".to_string();
+                    let message = "Kaku Assistant analyzing command error".to_string();
                     self.show_ai_progress_toast(message.clone(), ai_toast_lifetime_ms(&message));
                 } else if name == "kaku-toast-ai-ready" {
-                    let message = "AI fix ready. Press Cmd+Shift+E".to_string();
+                    let message = "Kaku Assistant suggestion ready. Press Cmd+Shift+E".to_string();
                     self.show_ai_result_notice(message.clone(), ai_toast_lifetime_ms(&message));
                 } else if name == "kaku-toast-ai-unavailable" {
-                    let message = "AI fix unavailable".to_string();
+                    let message = "Kaku Assistant unavailable".to_string();
                     self.show_ai_result_notice(message.clone(), ai_toast_lifetime_ms(&message));
                 } else if name == "kaku-toast-ai-missing-key" {
-                    let message = "Run kaku auto to set up AI.".to_string();
+                    let message = "Run kaku ai to set up Kaku Assistant.".to_string();
                     self.show_ai_result_notice(message.clone(), ai_toast_lifetime_ms(&message));
                 } else if name == "kaku-toast-ai-applied" {
                     // No notification on successful apply; command output is enough.
@@ -3189,7 +3189,7 @@ impl TermWindow {
                     let message = "Failed to apply suggestion".to_string();
                     self.show_ai_result_notice(message.clone(), ai_toast_lifetime_ms(&message));
                 } else if name == "kaku-toast-ai-info" {
-                    let message = "Kaku AI update".to_string();
+                    let message = "Kaku Assistant update".to_string();
                     self.show_ai_result_notice(message.clone(), ai_toast_lifetime_ms(&message));
                 } else if let Some(payload) = name.strip_prefix("kaku-toast-ai-") {
                     if let Some(message) = decode_hex_event_payload(payload) {

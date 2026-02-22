@@ -19,7 +19,7 @@ use wezterm_gui_subcommands::*;
 
 mod ai_config;
 mod asciicast;
-mod auto_cmd;
+mod assistant_config;
 mod cli;
 mod config_cmd;
 mod init;
@@ -97,7 +97,8 @@ impl CompletionGenerator for Shell {
 enum SubCommand {
     #[command(
         name = "start",
-        about = "Start the GUI, optionally running an alternative program [aliases: -e]"
+        about = "Start the GUI, optionally running an alternative program [aliases: -e]",
+        hide = true
     )]
     Start(StartCommand),
 
@@ -107,38 +108,11 @@ enum SubCommand {
     #[command(short_flag_alias = 'e', hide = true)]
     BlockingStart(StartCommand),
 
-    #[command(name = "cli", about = "Interact with experimental mux server")]
-    Cli(cli::CliCommand),
-
-    #[command(name = "imgcat", about = "Output an image to the terminal")]
-    ImageCat(ImgCatCommand),
-
     #[command(
-        name = "set-working-directory",
-        about = "Advise the terminal of the current working directory by \
-                 emitting an OSC 7 escape sequence"
+        name = "ai",
+        about = "Manage Kaku Assistant and AI coding tools configuration"
     )]
-    SetCwd(SetCwdCommand),
-
-    #[command(name = "record", about = "Record a terminal session as an asciicast")]
-    Record(asciicast::RecordCommand),
-
-    #[command(name = "replay", about = "Replay an asciicast terminal session")]
-    Replay(asciicast::PlayCommand),
-
-    /// Generate shell completion information
-    #[command(name = "shell-completion")]
-    ShellCompletion {
-        /// Which shell to generate for
-        #[arg(long, value_parser)]
-        shell: Shell,
-    },
-
-    #[command(
-        name = "update",
-        about = "Download and install the latest Kaku release automatically"
-    )]
-    Update(update::UpdateCommand),
+    Ai(ai_config::AiConfigCommand),
 
     #[command(name = "config", about = "Open and edit user kaku.lua configuration")]
     Config(config_cmd::ConfigCommand),
@@ -147,23 +121,60 @@ enum SubCommand {
     Init(init::InitCommand),
 
     #[command(
+        name = "update",
+        about = "Download and install the latest Kaku release automatically"
+    )]
+    Update(update::UpdateCommand),
+
+    #[command(
         name = "reset",
         about = "Reset Kaku shell integration and managed defaults"
     )]
     Reset(reset::ResetCommand),
 
     #[command(
-        name = "ai",
-        about = "Manage AI coding tools configuration (Claude Code, OpenCode, OpenClaw)"
+        name = "imgcat",
+        about = "Output an image to the terminal",
+        hide = true
     )]
-    Ai(ai_config::AiConfigCommand),
+    ImageCat(ImgCatCommand),
 
     #[command(
-        name = "auto",
-        visible_alias = "fix",
-        about = "Configure Kaku built-in AI capabilities"
+        name = "record",
+        about = "Record a terminal session as an asciicast",
+        hide = true
     )]
-    Auto(auto_cmd::AutoCommand),
+    Record(asciicast::RecordCommand),
+
+    #[command(
+        name = "replay",
+        about = "Replay an asciicast terminal session",
+        hide = true
+    )]
+    Replay(asciicast::PlayCommand),
+
+    #[command(
+        name = "cli",
+        about = "Interact with experimental mux server",
+        hide = true
+    )]
+    Cli(cli::CliCommand),
+
+    #[command(
+        name = "set-working-directory",
+        about = "Advise the terminal of the current working directory by \
+                 emitting an OSC 7 escape sequence",
+        hide = true
+    )]
+    SetCwd(SetCwdCommand),
+
+    /// Generate shell completion information
+    #[command(name = "shell-completion", hide = true)]
+    ShellCompletion {
+        /// Which shell to generate for
+        #[arg(long, value_parser)]
+        shell: Shell,
+    },
 }
 
 use termwiz::escape::osc::{
@@ -788,7 +799,6 @@ fn run() -> anyhow::Result<()> {
         SubCommand::Init(cmd) => cmd.run(),
         SubCommand::Reset(cmd) => cmd.run(),
         SubCommand::Ai(cmd) => cmd.run(),
-        SubCommand::Auto(cmd) => cmd.run(),
     }
 }
 
@@ -802,52 +812,195 @@ fn should_show_main_menu(opts: &Opt) -> bool {
 }
 
 fn select_main_menu_command() -> anyhow::Result<SubCommand> {
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+    use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+
     const PURPLE_BOLD: &str = "\x1b[1;35m";
     const BLUE: &str = "\x1b[34m";
     const GRAY: &str = "\x1b[90m";
+    const PURPLE: &str = "\x1b[35m";
     const RESET: &str = "\x1b[0m";
 
-    println!();
-    println!("{PURPLE_BOLD}  _  __      _          {RESET}");
-    println!("{PURPLE_BOLD} | |/ /     | |         {RESET}");
-    println!("{PURPLE_BOLD} | ' / __ _ | | __ _   _ {RESET}");
-    println!("{PURPLE_BOLD} |  < / _` || |/ /| | | |{RESET}");
-    println!("{PURPLE_BOLD} | . \\ (_| ||   < | |_| |{RESET}");
-    println!("{PURPLE_BOLD} |_|\\_\\__,_||_|\\_\\ \\__,_|{RESET}");
-    println!("  {BLUE}https://github.com/tw93/Kaku{RESET}");
-    println!("  {GRAY}A fast, out-of-the-box terminal built for AI coding.{RESET}");
-    println!();
-    println!("  1. config   Open ~/.config/kaku/kaku.lua");
-    println!("  2. update   Check and install latest version");
-    println!("  3. init     Initialize shell integration");
-    println!("  4. reset    Remove Kaku shell integration and managed defaults");
-    println!("  5. ai       Manage AI coding tools configuration");
-    println!("  6. auto     Configure Kaku built-in AI settings");
-    println!("  q. quit");
-    println!();
+    #[derive(Clone, Copy)]
+    enum MenuChoice {
+        Ai,
+        Config,
+        Init,
+        Update,
+        Reset,
+    }
+
+    const MENU_ITEMS: [(&str, &str, MenuChoice); 5] = [
+        (
+            "ai",
+            "Manage Kaku Assistant and AI tool settings",
+            MenuChoice::Ai,
+        ),
+        ("config", "Open ~/.config/kaku/kaku.lua", MenuChoice::Config),
+        ("init", "Initialize shell integration", MenuChoice::Init),
+        (
+            "update",
+            "Check and install latest version",
+            MenuChoice::Update,
+        ),
+        (
+            "reset",
+            "Remove Kaku shell integration and managed defaults",
+            MenuChoice::Reset,
+        ),
+    ];
+
+    fn render_menu(
+        selected: usize,
+        purple_bold: &str,
+        blue: &str,
+        gray: &str,
+        purple: &str,
+        reset: &str,
+    ) -> anyhow::Result<()> {
+        use crossterm::cursor::MoveTo;
+        use crossterm::queue;
+        use crossterm::terminal::{Clear, ClearType};
+
+        let mut stdout = std::io::stdout();
+        queue!(stdout, MoveTo(0, 0), Clear(ClearType::All)).context("clear main menu")?;
+
+        let mut out = String::new();
+        out.push_str("\r\n");
+        out.push_str(&format!("{purple_bold}  _  __      _          {reset}\r\n"));
+        out.push_str(&format!("{purple_bold} | |/ /     | |         {reset}\r\n"));
+        out.push_str(&format!(
+            "{purple_bold} | ' / __ _ | | __ _   _ {reset}\r\n"
+        ));
+        out.push_str(&format!(
+            "{purple_bold} |  < / _` || |/ /| | | |{reset}\r\n"
+        ));
+        out.push_str(&format!(
+            "{purple_bold} | . \\ (_| ||   < | |_| |{reset}  {blue}https://github.com/tw93/Kaku{reset}\r\n"
+        ));
+        out.push_str(&format!(
+            "{purple_bold} |_|\\_\\__,_||_|\\_\\ \\__,_|{reset}  {gray}A fast, out-of-the-box terminal built for AI coding.{reset}\r\n"
+        ));
+        out.push_str("\r\n");
+        for (idx, (name, desc, _)) in MENU_ITEMS.iter().enumerate() {
+            let is_selected = idx == selected;
+            let marker = if is_selected { "▸" } else { " " };
+            let number = idx + 1;
+            let marker_color = if is_selected { purple } else { gray };
+            let name_color = if is_selected { purple_bold } else { reset };
+            let row_color = if is_selected { PURPLE_BOLD } else { RESET };
+            out.push_str(&format!(
+                " {row_color}{marker_color}{marker}{reset}{row_color} {number}. {name_color}{:<7}{reset}{row_color}     {desc}{reset}",
+                name,
+            ));
+            out.push_str("\r\n");
+        }
+        out.push_str("\r\n");
+        out.push_str(&format!(
+            "  {gray}Use ↑/↓ and Enter, or press 1-5. Press q or Esc to quit.{reset}\r\n"
+        ));
+
+        stdout
+            .write_all(out.as_bytes())
+            .context("write main menu")?;
+        stdout.flush().context("flush stdout")
+    }
+
+    fn to_subcommand(choice: MenuChoice) -> SubCommand {
+        match choice {
+            MenuChoice::Ai => SubCommand::Ai(ai_config::AiConfigCommand::default()),
+            MenuChoice::Config => SubCommand::Config(config_cmd::ConfigCommand::default()),
+            MenuChoice::Init => SubCommand::Init(init::InitCommand::default()),
+            MenuChoice::Update => SubCommand::Update(update::UpdateCommand::default()),
+            MenuChoice::Reset => SubCommand::Reset(reset::ResetCommand::default()),
+        }
+    }
+
+    fn can_use_menu_char_shortcut(modifiers: KeyModifiers) -> bool {
+        !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+    }
+
+    struct RawModeGuard;
+    impl Drop for RawModeGuard {
+        fn drop(&mut self) {
+            let _ = disable_raw_mode();
+        }
+    }
+
+    enable_raw_mode().context("enable raw mode for main menu")?;
+    let _raw_guard = RawModeGuard;
+
+    let mut selected = 0usize;
+    render_menu(selected, PURPLE_BOLD, BLUE, GRAY, PURPLE, RESET)?;
 
     loop {
-        print!("Select option [1-6/q]: ");
-        std::io::stdout().flush().context("flush stdout")?;
-
-        let mut input = String::new();
-        std::io::stdin()
-            .read_line(&mut input)
-            .context("read menu input")?;
-
-        match input.trim().to_ascii_lowercase().as_str() {
-            "1" | "config" => return Ok(SubCommand::Config(config_cmd::ConfigCommand::default())),
-            "2" | "update" => return Ok(SubCommand::Update(update::UpdateCommand::default())),
-            "3" | "init" => return Ok(SubCommand::Init(init::InitCommand::default())),
-            "4" | "reset" => return Ok(SubCommand::Reset(reset::ResetCommand::default())),
-            "5" | "ai" => return Ok(SubCommand::Ai(ai_config::AiConfigCommand::default())),
-            "6" | "auto" | "fix" => {
-                return Ok(SubCommand::Auto(auto_cmd::AutoCommand::default()));
-            }
-            "q" | "quit" | "exit" => std::process::exit(0),
-            _ => {
-                println!("Invalid option. Enter 1, 2, 3, 4, 5, 6, or q.");
-            }
+        match event::read().context("read main menu input")? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if selected > 0 {
+                        selected -= 1;
+                        render_menu(selected, PURPLE_BOLD, BLUE, GRAY, PURPLE, RESET)?;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if selected + 1 < MENU_ITEMS.len() {
+                        selected += 1;
+                        render_menu(selected, PURPLE_BOLD, BLUE, GRAY, PURPLE, RESET)?;
+                    }
+                }
+                KeyCode::Enter => return Ok(to_subcommand(MENU_ITEMS[selected].2)),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    std::process::exit(0)
+                }
+                KeyCode::Char('1') if can_use_menu_char_shortcut(key.modifiers) => {
+                    return Ok(to_subcommand(MenuChoice::Ai));
+                }
+                KeyCode::Char('2') if can_use_menu_char_shortcut(key.modifiers) => {
+                    return Ok(to_subcommand(MenuChoice::Config));
+                }
+                KeyCode::Char('3') if can_use_menu_char_shortcut(key.modifiers) => {
+                    return Ok(to_subcommand(MenuChoice::Init));
+                }
+                KeyCode::Char('4') if can_use_menu_char_shortcut(key.modifiers) => {
+                    return Ok(to_subcommand(MenuChoice::Update));
+                }
+                KeyCode::Char('5') if can_use_menu_char_shortcut(key.modifiers) => {
+                    return Ok(to_subcommand(MenuChoice::Reset));
+                }
+                KeyCode::Char('a') | KeyCode::Char('A')
+                    if can_use_menu_char_shortcut(key.modifiers) =>
+                {
+                    return Ok(to_subcommand(MenuChoice::Ai));
+                }
+                KeyCode::Char('c') | KeyCode::Char('C')
+                    if can_use_menu_char_shortcut(key.modifiers) =>
+                {
+                    return Ok(to_subcommand(MenuChoice::Config));
+                }
+                KeyCode::Char('i') | KeyCode::Char('I')
+                    if can_use_menu_char_shortcut(key.modifiers) =>
+                {
+                    return Ok(to_subcommand(MenuChoice::Init));
+                }
+                KeyCode::Char('u') | KeyCode::Char('U')
+                    if can_use_menu_char_shortcut(key.modifiers) =>
+                {
+                    return Ok(to_subcommand(MenuChoice::Update));
+                }
+                KeyCode::Char('r') | KeyCode::Char('R')
+                    if can_use_menu_char_shortcut(key.modifiers) =>
+                {
+                    return Ok(to_subcommand(MenuChoice::Reset));
+                }
+                KeyCode::Char('q') | KeyCode::Char('Q')
+                    if can_use_menu_char_shortcut(key.modifiers) =>
+                {
+                    std::process::exit(0)
+                }
+                KeyCode::Esc => std::process::exit(0),
+                _ => {}
+            },
+            _ => {}
         }
     }
 }

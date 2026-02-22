@@ -225,7 +225,7 @@ local function strip_wrapping_quotes(value)
   return trimmed
 end
 
-local ai_fix_toml_path = kaku_state_dir and (kaku_state_dir .. "/auto.toml") or nil
+local ai_fix_toml_path = kaku_state_dir and (kaku_state_dir .. "/assistant.toml") or nil
 local ai_fix_file_settings = {}
 
 local function strip_inline_toml_comment(line)
@@ -762,7 +762,7 @@ local function inject_ai_notice(pane, headline, detail, suggested_command)
   end
 
   local cmd = sanitize_suggested_command(suggested_command or "")
-  local summary_line = "\27[38;5;141m╭─ Kaku AI\27[0m  \27[1m" .. summary .. "\27[0m"
+  local summary_line = "\27[38;5;141m╭─ Kaku Assistant\27[0m  \27[1m" .. summary .. "\27[0m"
   local command_line = ""
   if cmd ~= "" then
     command_line = "\27[38;5;141m╰─\27[0m " .. cmd .. "    \27[38;5;244mCmd+Shift+E\27[0m"
@@ -792,7 +792,7 @@ local function inject_ai_status(pane, message)
   end
 
   local summary = normalize_ai_summary(message or "", "Checking this error now.")
-  local line = "\27[38;5;141m╰─ Kaku AI\27[0m  \27[38;5;244m" .. summary .. "\27[0m"
+  local line = "\27[38;5;141m╰─ Kaku Assistant\27[0m  \27[38;5;244m" .. summary .. "\27[0m"
   local output = "\r\n" .. line .. "\r\n"
   pcall(function()
     pane:inject_output(output)
@@ -1836,14 +1836,14 @@ config.keys = {
     action = wezterm.action.SpawnTab('CurrentPaneDomain'),
   },
 
-  -- Cmd+Shift+A: open Kaku AI config in current pane
+  -- Cmd+Shift+A: open Kaku AI settings in current pane
   {
     key = 'A',
     mods = 'CMD|SHIFT',
     action = wezterm.action.EmitEvent('run-kaku-ai-config'),
   },
 
-  -- Cmd+Shift+E: apply latest AI fix suggestion for the active pane
+  -- Cmd+Shift+E: apply latest Kaku Assistant suggestion for the active pane
   {
     key = 'E',
     mods = 'CMD|SHIFT',
