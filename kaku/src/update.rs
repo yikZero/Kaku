@@ -781,7 +781,9 @@ for _ in $(seq 1 20); do
     break
   fi
   for pid in $KAKU_PIDS; do
-    kill -TERM "$pid" 2>/dev/null || true
+    if ! kill -TERM "$pid" 2>/dev/null; then
+      log "failed to send TERM to pid $pid"
+    fi
   done
   sleep 1
 done
@@ -789,7 +791,9 @@ done
 KAKU_PIDS=$(collect_kaku_pids | tr '\n' ' ')
 if [[ -n "$KAKU_PIDS" ]]; then
   for pid in $KAKU_PIDS; do
-    kill -KILL "$pid" 2>/dev/null || true
+    if ! kill -KILL "$pid" 2>/dev/null; then
+      log "failed to send KILL to pid $pid"
+    fi
   done
 fi
 

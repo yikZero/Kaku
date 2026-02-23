@@ -367,7 +367,10 @@ impl super::TermWindow {
                 self.key_table_state.did_process_key();
                 let handled = match self.perform_key_assignment(&pane, &entry.action) {
                     Ok(PerformAssignmentResult::Handled) => true,
-                    Err(_) => true,
+                    Err(e) => {
+                        log::warn!("perform_key_assignment failed: {:?}", e);
+                        true
+                    }
                     Ok(_) => false,
                 };
 

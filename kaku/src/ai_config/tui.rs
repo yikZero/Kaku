@@ -138,13 +138,14 @@ impl ToolState {
 
         let raw = match std::fs::read_to_string(&path) {
             Ok(s) => s,
-            Err(_) => {
+            Err(e) => {
+                log::warn!("failed to read config for {}: {}", tool.label(), e);
                 return ToolState {
                     tool,
                     installed: true,
                     fields: vec![FieldEntry {
                         key: "error".into(),
-                        value: "failed to read config".into(),
+                        value: format!("failed to read config: {}", e),
                         options: vec![],
                         ..Default::default()
                     }],
@@ -155,24 +156,24 @@ impl ToolState {
         let fields = match tool {
             Tool::KakuAssistant => extract_kaku_assistant_fields(&raw),
             Tool::ClaudeCode => {
-                let parsed: serde_json::Value = parse_json_or_jsonc(&raw).unwrap_or_default();
+                let parsed = parse_json_or_jsonc_with_debug(&raw, tool.label());
                 extract_claude_code_fields(&parsed)
             }
             Tool::Codex => extract_codex_fields(&raw),
             Tool::Gemini => {
-                let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+                let parsed = parse_json_with_debug(&raw, tool.label());
                 extract_gemini_fields(&parsed)
             }
             Tool::Copilot => {
-                let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+                let parsed = parse_json_with_debug(&raw, tool.label());
                 extract_copilot_fields(&parsed)
             }
             Tool::OpenCode => {
-                let parsed: serde_json::Value = parse_json_or_jsonc(&raw).unwrap_or_default();
+                let parsed = parse_json_or_jsonc_with_debug(&raw, tool.label());
                 extract_opencode_fields(&parsed)
             }
             Tool::OpenClaw => {
-                let parsed: serde_json::Value = parse_json_or_jsonc(&raw).unwrap_or_default();
+                let parsed = parse_json_or_jsonc_with_debug(&raw, tool.label());
                 extract_openclaw_fields(&parsed)
             }
         };
@@ -183,6 +184,20 @@ impl ToolState {
             fields,
         }
     }
+}
+
+fn parse_json_with_debug(raw: &str, tool_label: &str) -> serde_json::Value {
+    serde_json::from_str(raw).unwrap_or_else(|e| {
+        log::debug!("failed to parse {} config json: {}", tool_label, e);
+        serde_json::Value::Null
+    })
+}
+
+fn parse_json_or_jsonc_with_debug(raw: &str, tool_label: &str) -> serde_json::Value {
+    parse_json_or_jsonc(raw).unwrap_or_else(|e| {
+        log::debug!("failed to parse {} config json/jsonc: {}", tool_label, e);
+        serde_json::Value::Null
+    })
 }
 
 fn json_str(val: &serde_json::Value, key: &str) -> String {
@@ -562,18 +577,31 @@ fn get_opencode_api_key(provider_name: &str) -> Option<String> {
 
 /// Get GitHub Copilot username from gh CLI
 fn get_copilot_account() -> Option<String> {
-    let output = std::process::Command::new("gh")
+    let output = match std::process::Command::new("gh")
         .args(["api", "user", "-q", ".login"])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .output()
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(e) => {
+            log::debug!("gh account probe failed to launch: {}", e);
+            return None;
+        }
+    };
 
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::debug!(
+            "gh account probe failed with status {}: {}",
+            output.status,
+            stderr.trim()
+        );
         return None;
     }
 
     String::from_utf8(output.stdout)
+        .map_err(|e| log::debug!("gh account probe returned non-utf8 stdout: {}", e))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -581,19 +609,35 @@ fn get_copilot_account() -> Option<String> {
 
 /// Get Claude Code account email from claude auth status
 fn get_claude_code_account() -> Option<String> {
-    let output = std::process::Command::new("claude")
+    let output = match std::process::Command::new("claude")
         .args(["auth", "status"])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .output()
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(e) => {
+            log::debug!("claude auth status probe failed to launch: {}", e);
+            return None;
+        }
+    };
 
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::debug!(
+            "claude auth status probe failed with status {}: {}",
+            output.status,
+            stderr.trim()
+        );
         return None;
     }
 
-    let json_str = String::from_utf8(output.stdout).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+    let json_str = String::from_utf8(output.stdout)
+        .map_err(|e| log::debug!("claude auth status probe returned non-utf8 stdout: {}", e))
+        .ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&json_str)
+        .map_err(|e| log::debug!("failed to parse claude auth status json: {}", e))
+        .ok()?;
 
     // Extract email from auth status JSON
     parsed.get("email")?.as_str().map(|s| s.to_string())
@@ -629,17 +673,33 @@ fn fetch_models_dev_json() -> Option<serde_json::Value> {
     let cache_dir = config::HOME_DIR.join(".cache").join("kaku");
     let cache_path = cache_dir.join("models.json");
 
-    let output = std::process::Command::new("curl")
+    let output = match std::process::Command::new("curl")
         .args(["-sS", "--max-time", "10", "https://models.dev/api.json"])
         .output()
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(e) => {
+            log::debug!("models.dev fetch failed to launch curl: {}", e);
+            return None;
+        }
+    };
 
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::debug!(
+            "models.dev fetch failed with status {}: {}",
+            output.status,
+            stderr.trim()
+        );
         return None;
     }
 
-    let raw = String::from_utf8(output.stdout).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let raw = String::from_utf8(output.stdout)
+        .map_err(|e| log::debug!("models.dev fetch returned non-utf8 stdout: {}", e))
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| log::debug!("failed to parse models.dev json: {}", e))
+        .ok()?;
     let _ = config::create_user_owned_dirs(&cache_dir);
     let _ = std::fs::write(&cache_path, &raw);
     Some(v)
