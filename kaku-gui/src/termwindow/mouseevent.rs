@@ -66,6 +66,9 @@ impl super::TermWindow {
         };
 
         self.current_mouse_event.replace(event.clone());
+        // Mouse interaction should cancel any synthetic prompt-selection state
+        // tracked from keyboard shortcuts (Cmd+A/Shift+Arrow, etc).
+        self.clear_line_editor_selection();
 
         let border = self.get_os_border();
 

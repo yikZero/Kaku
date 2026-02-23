@@ -188,7 +188,7 @@ enum OnlyKeyBindings {
 }
 
 impl super::TermWindow {
-    fn clear_line_editor_selection(&mut self) {
+    pub(super) fn clear_line_editor_selection(&mut self) {
         self.line_editor_selection = super::LineEditorSelectionState::None;
         self.line_editor_selection_owner = None;
     }
@@ -535,6 +535,14 @@ impl super::TermWindow {
             None => return,
         };
 
+        if key.key_is_down
+            && self.pane_state(pane.pane_id()).overlay.is_none()
+            && !leader_active
+            && !self.should_preserve_line_editor_selection_for_raw_key(&key)
+        {
+            self.clear_line_editor_selection();
+        }
+
         // First, try to match raw physical key
         let phys_key = match &key.key {
             phys @ KeyCode::Physical(_) => Some(phys.clone()),
@@ -692,11 +700,7 @@ impl super::TermWindow {
         use super::{LineEditorSelectionDirection as Dir, LineEditorSelectionState as Sel};
         use ::window::KeyCode as WK;
 
-        let is_shift_key = matches!(window_key.key, WK::Shift | WK::LeftShift | WK::RightShift);
         if !window_key.key_is_down {
-            if is_shift_key {
-                self.clear_line_editor_selection();
-            }
             return false;
         }
 
@@ -707,56 +711,75 @@ impl super::TermWindow {
         let mut handled = true;
         let mut keep_selection_anchor = false;
 
-        let ensure_mark = |buf: &mut Vec<u8>, anchor_active: bool| {
-            if !anchor_active {
-                // Ctrl-Space (NUL) sets the mark in readline/zle emacs mode.
-                buf.push(0x00);
-            }
-        };
+        // Note: We intentionally do NOT set the shell mark here.
+        // The shell-side selection widgets in setup_zsh.sh handle mark management
+        // directly via zle, avoiding terminal encoding issues with NUL or CSI sequences.
 
         match (&window_key.key, mods) {
             (WK::LeftArrow | WK::ApplicationLeftArrow, Modifiers::SHIFT) => {
-                ensure_mark(&mut out, self.has_line_editor_selection());
-                out.push(0x02); // Ctrl-B
+                // Send the Shift+Left CSI sequence so the shell-side
+                // _kaku_select_left_char widget activates REGION_ACTIVE and
+                // produces the visible selection highlight.
+                out.extend_from_slice(b"\x1b[1;2D");
                 self.extend_line_editor_charwise(Dir::Left);
                 keep_selection_anchor = self.has_line_editor_selection();
             }
             (WK::RightArrow | WK::ApplicationRightArrow, Modifiers::SHIFT) => {
-                ensure_mark(&mut out, self.has_line_editor_selection());
-                out.push(0x06); // Ctrl-F
+                out.extend_from_slice(b"\x1b[1;2C");
                 self.extend_line_editor_charwise(Dir::Right);
                 keep_selection_anchor = self.has_line_editor_selection();
             }
             (WK::LeftArrow | WK::ApplicationLeftArrow, m)
                 if m == (Modifiers::SUPER | Modifiers::SHIFT) =>
             {
-                let had_selection = self.has_line_editor_selection();
-                ensure_mark(&mut out, had_selection);
-                out.push(0x01); // Ctrl-A
+                // Send special sequence to invoke shell-side widget.
+                out.extend_from_slice(b"\x1b[991~");
                 self.line_editor_selection = Sel::ToStart;
                 keep_selection_anchor = true;
             }
             (WK::RightArrow | WK::ApplicationRightArrow, m)
                 if m == (Modifiers::SUPER | Modifiers::SHIFT) =>
             {
-                let had_selection = self.has_line_editor_selection();
-                ensure_mark(&mut out, had_selection);
-                out.push(0x05); // Ctrl-E
+                out.extend_from_slice(b"\x1b[992~");
                 self.line_editor_selection = Sel::ToEnd;
                 keep_selection_anchor = true;
             }
+            (WK::LeftArrow | WK::ApplicationLeftArrow, Modifiers::NONE)
+                if self.has_line_editor_selection() =>
+            {
+                // Collapse selection leftward. The shell-side _kaku_mv_backward_char widget
+                // (bound to ^B) deactivates REGION_ACTIVE before moving the cursor, so no
+                // special escape sequence is needed here.
+                out.push(0x02); // Ctrl-B (backward-char)
+            }
+            (WK::RightArrow | WK::ApplicationRightArrow, Modifiers::NONE)
+                if self.has_line_editor_selection() =>
+            {
+                out.push(0x06); // Ctrl-F (forward-char)
+            }
+            (WK::LeftArrow | WK::ApplicationLeftArrow, Modifiers::SUPER)
+                if self.has_line_editor_selection() =>
+            {
+                out.push(0x01); // Ctrl-A (beginning-of-line)
+            }
+            (WK::RightArrow | WK::ApplicationRightArrow, Modifiers::SUPER)
+                if self.has_line_editor_selection() =>
+            {
+                out.push(0x05); // Ctrl-E (end-of-line)
+            }
             (WK::Char('a') | WK::Char('A'), Modifiers::SUPER) => {
-                out.push(0x01); // Ctrl-A
-                out.push(0x00); // Ctrl-Space
-                out.push(0x05); // Ctrl-E
+                // Send special sequence to invoke shell-side widget.
+                out.extend_from_slice(b"\x1b[990~");
                 self.line_editor_selection = Sel::All;
                 keep_selection_anchor = true;
             }
             (WK::Char('\u{1b}'), Modifiers::NONE) if self.has_line_editor_selection() => {
-                // Collapse region by setting mark at the current point.
-                out.push(0x00); // Ctrl-Space
+                // Cancel selection: clear GUI state and notify the shell to deactivate
+                // its REGION_ACTIVE. We send a dedicated CSI sequence rather than bare
+                // ESC, because ESC acts as a meta-prefix in zsh emacs mode and does not
+                // clear the shell-side region highlight by itself.
+                out.extend_from_slice(b"\x1b[995~");
                 self.clear_line_editor_selection();
-                keep_selection_anchor = false;
             }
             (WK::Char('\u{8}') | WK::Char('\u{7f}'), _) if self.has_line_editor_selection() => {
                 if let Some(bytes) = self.bytes_for_line_editor_selection_delete() {
@@ -814,9 +837,6 @@ impl super::TermWindow {
         use ::window::KeyCode as WK;
 
         if !window_key.key_is_down {
-            if matches!(window_key.key, WK::Shift | WK::LeftShift | WK::RightShift) {
-                self.clear_line_editor_selection();
-            }
             return;
         }
 
@@ -873,6 +893,101 @@ impl super::TermWindow {
         }
     }
 
+    /// Returns true for key categories that must not cancel an active line-editor selection.
+    /// Plain-arrow and Cmd+arrow collapse cases are handled by early returns in the callers;
+    /// this helper covers the remaining categories.
+    fn key_category_preserves_selection(
+        is_shift: bool,
+        is_shift_arrow: bool,
+        is_cmd_shift_arrow: bool,
+        is_cmd_a: bool,
+        is_delete: bool,
+        is_esc: bool,
+    ) -> bool {
+        is_shift || is_shift_arrow || is_cmd_shift_arrow || is_cmd_a || is_delete || is_esc
+    }
+
+    fn should_preserve_line_editor_selection_for_raw_key(&self, key: &RawKeyEvent) -> bool {
+        use ::window::PhysKeyCode as PK;
+        let m = key.modifiers.remove_positional_mods();
+        let has_sel = self.has_line_editor_selection();
+
+        // Plain Left/Right: if selection is active, preserve so maybe_handle_native_line_editor_shortcut
+        // can collapse the region. Up/Down are excluded — they have no collapse arm and can be
+        // pre-cleared immediately, which also avoids leaking stale zsh REGION_ACTIVE on history nav.
+        // Also works around macOS modifier state desync where SHIFT may linger after release.
+        if matches!(key.phys_code, Some(PK::LeftArrow | PK::RightArrow)) && m == Modifiers::NONE {
+            return has_sel;
+        }
+
+        // Cmd+Arrow: same logic - if selection is active, let native shortcut handle it
+        if matches!(key.phys_code, Some(PK::LeftArrow | PK::RightArrow))
+            && m == Modifiers::SUPER
+        {
+            return has_sel;
+        }
+
+        Self::key_category_preserves_selection(
+            matches!(key.phys_code, Some(PK::LeftShift | PK::RightShift)),
+            matches!(key.phys_code, Some(PK::LeftArrow | PK::RightArrow)) && m == Modifiers::SHIFT,
+            matches!(key.phys_code, Some(PK::LeftArrow | PK::RightArrow))
+                && m == (Modifiers::SUPER | Modifiers::SHIFT),
+            matches!(key.phys_code, Some(PK::A)) && m == Modifiers::SUPER,
+            matches!(key.phys_code, Some(PK::Backspace | PK::Delete)),
+            // Preserve ESC in the raw path only when a selection is active, so the
+            // subsequent key_event_impl handler can still cancel it.  Without this,
+            // clear_line_editor_selection() would fire here first and the ESC cancel
+            // branch in maybe_handle_native_line_editor_shortcut would never trigger.
+            matches!(key.phys_code, Some(PK::Escape))
+                && m == Modifiers::NONE
+                && self.has_line_editor_selection(),
+        )
+    }
+
+    fn should_preserve_line_editor_selection_for_key(&self, window_key: &KeyEvent) -> bool {
+        use ::window::KeyCode as WK;
+        let m = window_key.modifiers.remove_positional_mods();
+        let k = &window_key.key;
+        let has_sel = self.has_line_editor_selection();
+
+        // Plain Left/Right: if selection is active, preserve so maybe_handle_native_line_editor_shortcut
+        // can collapse the region. Up/Down are excluded — they have no collapse arm and can be
+        // pre-cleared immediately, which also avoids leaking stale zsh REGION_ACTIVE on history nav.
+        // Also works around macOS modifier state desync where SHIFT may linger after release.
+        if matches!(
+            k,
+            WK::LeftArrow | WK::ApplicationLeftArrow | WK::RightArrow | WK::ApplicationRightArrow
+        ) && m == Modifiers::NONE
+        {
+            return has_sel;
+        }
+
+        // Cmd+Arrow: same logic - if selection is active, let native shortcut handle it
+        if matches!(
+            k,
+            WK::LeftArrow
+                | WK::ApplicationLeftArrow
+                | WK::RightArrow
+                | WK::ApplicationRightArrow
+        ) && m == Modifiers::SUPER
+        {
+            return has_sel;
+        }
+
+        Self::key_category_preserves_selection(
+            matches!(k, WK::Shift | WK::LeftShift | WK::RightShift),
+            matches!(k, WK::LeftArrow | WK::ApplicationLeftArrow | WK::RightArrow | WK::ApplicationRightArrow)
+                && m == Modifiers::SHIFT,
+            matches!(k, WK::LeftArrow | WK::ApplicationLeftArrow | WK::RightArrow | WK::ApplicationRightArrow)
+                && m == (Modifiers::SUPER | Modifiers::SHIFT),
+            matches!(k, WK::Char('a') | WK::Char('A')) && m == Modifiers::SUPER,
+            matches!(k, WK::Char('\u{8}') | WK::Char('\u{7f}')),
+            // ESC: only preserve when selection is active so the cancel branch in
+            // maybe_handle_native_line_editor_shortcut can clear it.
+            matches!(k, WK::Char('\u{1b}')) && m == Modifiers::NONE && has_sel,
+        )
+    }
+
     pub fn key_event_impl(&mut self, window_key: KeyEvent, context: &dyn WindowOps) {
         let pane = match self.get_active_pane_or_overlay() {
             Some(pane) => pane,
@@ -888,6 +1003,14 @@ impl super::TermWindow {
         } else {
             (false, Modifiers::NONE)
         };
+
+        if window_key.key_is_down
+            && self.pane_state(pane.pane_id()).overlay.is_none()
+            && !leader_active
+            && !self.should_preserve_line_editor_selection_for_key(&window_key)
+        {
+            self.clear_line_editor_selection();
+        }
 
         if self.config.debug_key_events {
             log::info!(
