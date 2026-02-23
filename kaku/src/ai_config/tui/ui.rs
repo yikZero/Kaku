@@ -263,7 +263,6 @@ fn render_selector(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     }
     let field = &tool.fields[app.field_index];
-    let is_factory_model_selector = tool.tool == super::Tool::FactoryDroid && field.key == "Model";
 
     let option_count = app.select_options.len() as u16;
     let max_popup_width = area.width.saturating_sub(4);
@@ -307,18 +306,12 @@ fn render_selector(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(i, opt)| {
             let is_sel = i == app.select_index;
-            let is_section_header = is_factory_model_selector
-                && super::is_factory_droid_model_section_header(opt.as_str());
-            let marker = if is_section_header {
-                "  "
-            } else if is_sel {
+            let marker = if is_sel {
                 "▸ "
             } else {
                 "  "
             };
-            let style = if is_section_header {
-                Style::default().fg(MUTED()).add_modifier(Modifier::BOLD)
-            } else if is_sel {
+            let style = if is_sel {
                 Style::default().fg(PURPLE()).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(TEXT())

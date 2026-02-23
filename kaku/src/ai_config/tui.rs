@@ -86,10 +86,6 @@ const ALL_TOOLS: [Tool; 8] = [
     Tool::OpenClaw,
 ];
 
-const FACTORY_DROID_CUSTOM_OPTION: &str = "Custom...";
-const FACTORY_DROID_SECTION_PROVIDED: &str = "— Factory Provided Models —";
-const FACTORY_DROID_SECTION_CUSTOM: &str = "— Custom Models —";
-
 struct FieldEntry {
     key: String,
     value: String,
@@ -1046,172 +1042,7 @@ fn extract_copilot_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
     fields
 }
 
-#[derive(Clone, Copy)]
-struct FactoryDroidModelDef {
-    label: &'static str,
-    id: &'static str,
-    multiplier: &'static str,
-}
 
-const FACTORY_DROID_MODELS: [FactoryDroidModelDef; 19] = [
-    FactoryDroidModelDef {
-        label: "GPT-5.1",
-        id: "gpt-5.1",
-        multiplier: "0.5x",
-    },
-    FactoryDroidModelDef {
-        label: "GPT-5.1-Codex",
-        id: "gpt-5.1-codex",
-        multiplier: "0.5x",
-    },
-    FactoryDroidModelDef {
-        label: "GPT-5.1-Codex-Max",
-        id: "gpt-5.1-codex-max",
-        multiplier: "0.5x",
-    },
-    FactoryDroidModelDef {
-        label: "GPT-5.2",
-        id: "gpt-5.2",
-        multiplier: "0.7x",
-    },
-    FactoryDroidModelDef {
-        label: "GPT-5.2-Codex",
-        id: "gpt-5.2-codex",
-        multiplier: "0.7x",
-    },
-    FactoryDroidModelDef {
-        label: "GPT-5.3-Codex",
-        id: "gpt-5.3-codex",
-        multiplier: "0.7x",
-    },
-    FactoryDroidModelDef {
-        label: "Sonnet 4.5",
-        id: "claude-sonnet-4-5-20250929",
-        multiplier: "1.2x",
-    },
-    FactoryDroidModelDef {
-        label: "Sonnet 4.6",
-        id: "claude-sonnet-4-6",
-        multiplier: "1.2x",
-    },
-    FactoryDroidModelDef {
-        label: "Opus 4.5",
-        id: "claude-opus-4-5-20251101",
-        multiplier: "2x",
-    },
-    FactoryDroidModelDef {
-        label: "Opus 4.6",
-        id: "claude-opus-4-6",
-        multiplier: "2x",
-    },
-    FactoryDroidModelDef {
-        label: "Opus 4.6 Fast Mode",
-        id: "claude-opus-4-6-fast",
-        multiplier: "12x",
-    },
-    FactoryDroidModelDef {
-        label: "Haiku 4.5",
-        id: "claude-haiku-4-5-20251001",
-        multiplier: "0.4x",
-    },
-    FactoryDroidModelDef {
-        label: "Gemini 3 Pro",
-        id: "gemini-3-pro-preview",
-        multiplier: "0.8x",
-    },
-    FactoryDroidModelDef {
-        label: "Gemini 3.1 Pro",
-        id: "gemini-3.1-pro-preview",
-        multiplier: "0.8x",
-    },
-    FactoryDroidModelDef {
-        label: "Gemini 3 Flash",
-        id: "gemini-3-flash-preview",
-        multiplier: "0.2x",
-    },
-    FactoryDroidModelDef {
-        label: "Droid Core (GLM-4.7)",
-        id: "glm-4.7",
-        multiplier: "0.25x",
-    },
-    FactoryDroidModelDef {
-        label: "Droid Core (GLM-5)",
-        id: "glm-5",
-        multiplier: "0.4x",
-    },
-    FactoryDroidModelDef {
-        label: "Droid Core (Kimi K2.5)",
-        id: "kimi-k2.5",
-        multiplier: "0.25x",
-    },
-    FactoryDroidModelDef {
-        label: "Droid Core (MiniMax M2.5)",
-        id: "minimax-m2.5",
-        multiplier: "0.12x",
-    },
-];
-
-fn format_factory_droid_model_option(def: FactoryDroidModelDef) -> String {
-    format!("{} ({})", def.label, def.multiplier)
-}
-
-fn factory_droid_model_id_from_option(option: &str) -> Option<&'static str> {
-    FACTORY_DROID_MODELS
-        .iter()
-        .find_map(|def| (format_factory_droid_model_option(*def) == option).then_some(def.id))
-}
-
-pub(super) fn is_factory_droid_model_section_header(option: &str) -> bool {
-    option == FACTORY_DROID_SECTION_PROVIDED || option == FACTORY_DROID_SECTION_CUSTOM
-}
-
-fn factory_droid_option_to_model_value(option: &str) -> Option<String> {
-    if is_factory_droid_model_section_header(option) || option == FACTORY_DROID_CUSTOM_OPTION {
-        return None;
-    }
-    if let Some(id) = factory_droid_model_id_from_option(option) {
-        return Some(id.to_string());
-    }
-    Some(option.to_string())
-}
-
-fn read_factory_droid_model_options(val: &serde_json::Value, current_model: &str) -> Vec<String> {
-    let mut options = Vec::new();
-
-    options.push(FACTORY_DROID_SECTION_PROVIDED.to_string());
-    for model in FACTORY_DROID_MODELS {
-        options.push(format_factory_droid_model_option(model));
-    }
-
-    let mut custom_models: Vec<String> = val
-        .get("customModels")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|entry| entry.get("model").and_then(|v| v.as_str()))
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if !current_model.is_empty()
-        && FACTORY_DROID_MODELS
-            .iter()
-            .all(|m| m.id != current_model && m.label != current_model)
-        && !custom_models.iter().any(|m| m == current_model)
-    {
-        custom_models.push(current_model.to_string());
-    }
-
-    if !custom_models.is_empty() {
-        options.push(FACTORY_DROID_SECTION_CUSTOM.to_string());
-        options.extend(custom_models);
-    }
-
-    options.push(FACTORY_DROID_CUSTOM_OPTION.to_string());
-    options
-}
 
 fn extract_factory_droid_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
     let session_defaults = val
@@ -1224,7 +1055,6 @@ fn extract_factory_droid_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
         .or_else(|| val.get("model").and_then(|v| v.as_str()))
         .unwrap_or("")
         .to_string();
-    let model_options = read_factory_droid_model_options(val, &model);
 
     let reasoning = session_defaults
         .and_then(|s| s.get("reasoningEffort"))
@@ -1251,8 +1081,8 @@ fn extract_factory_droid_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
             } else {
                 model
             },
-            options: model_options,
-            ..Default::default()
+            options: vec![],
+            editable: true,
         },
         FieldEntry {
             key: "Reasoning Effort".into(),
@@ -1268,7 +1098,7 @@ fn extract_factory_droid_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
                 "medium".into(),
                 "high".into(),
             ],
-            ..Default::default()
+            editable: true,
         },
         FieldEntry {
             key: "Autonomy Level".into(),
@@ -1284,7 +1114,7 @@ fn extract_factory_droid_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
                 "auto-medium".into(),
                 "auto-high".into(),
             ],
-            ..Default::default()
+            editable: true,
         },
     ]
 }
@@ -1764,20 +1594,8 @@ impl App {
         }
     }
 
-    fn is_factory_droid_model_selector(&self) -> bool {
-        self.tools
-            .get(self.tool_index)
-            .and_then(|tool| tool.fields.get(self.field_index).map(|field| (tool, field)))
-            .is_some_and(|(tool, field)| tool.tool == Tool::FactoryDroid && field.key == "Model")
-    }
-
-    fn is_select_option_selectable(&self, index: usize) -> bool {
-        let Some(option) = self.select_options.get(index) else {
-            return false;
-        };
-        if self.is_factory_droid_model_selector() && is_factory_droid_model_section_header(option) {
-            return false;
-        }
+    fn is_select_option_selectable(&self, _index: usize) -> bool {
+        // All options are selectable for other tools
         true
     }
 
@@ -1858,21 +1676,11 @@ impl App {
         if !field.options.is_empty() {
             self.selecting = true;
             self.select_options = field.options.clone();
-            self.select_index = if tool.tool == Tool::FactoryDroid && field.key == "Model" {
-                self.select_options
-                    .iter()
-                    .position(|opt| {
-                        factory_droid_option_to_model_value(opt).as_deref()
-                            == Some(field.value.as_str())
-                    })
-                    .unwrap_or_else(|| self.first_selectable_option_index())
-            } else {
-                field
-                    .options
-                    .iter()
-                    .position(|o| *o == field.value)
-                    .unwrap_or(0)
-            };
+            self.select_index = field
+                .options
+                .iter()
+                .position(|o| *o == field.value)
+                .unwrap_or(0);
             if !self.is_select_option_selectable(self.select_index) {
                 self.select_index = self.first_selectable_option_index();
             }
@@ -1932,30 +1740,6 @@ impl App {
         let old_val = self.tools[self.tool_index].fields[self.field_index]
             .value
             .clone();
-
-        // Factory Droid can receive new model aliases over time.
-        // "Custom..." lets users input any model string without waiting for a Kaku release.
-        if tool_kind == Tool::FactoryDroid
-            && field_key == "Model"
-            && new_val == FACTORY_DROID_CUSTOM_OPTION
-        {
-            self.editing = true;
-            self.focus = Focus::Editor;
-            self.edit_buf = if old_val == "—" {
-                String::new()
-            } else {
-                old_val
-            };
-            self.edit_cursor = self.edit_buf.len();
-            return;
-        }
-        if tool_kind == Tool::FactoryDroid && field_key == "Model" {
-            if let Some(mapped) = factory_droid_option_to_model_value(&new_val) {
-                new_val = mapped;
-            } else {
-                return;
-            }
-        }
 
         if new_val == old_val {
             return;
@@ -2168,11 +1952,6 @@ fn save_field(tool: Tool, field_key: &str, new_val: &str) -> anyhow::Result<()> 
                     target_key.to_string(),
                     serde_json::Value::String(new_val.to_string()),
                 );
-            }
-
-            // Droid effectively uses session defaults; remove deprecated top-level key to avoid drift.
-            if field_key == "Model" {
-                obj.remove("model");
             }
         }
         Tool::ClaudeCode => {
