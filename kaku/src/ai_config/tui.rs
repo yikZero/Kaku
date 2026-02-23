@@ -1732,7 +1732,7 @@ impl App {
             return;
         }
 
-        let mut new_val = self.select_options[self.select_index].clone();
+        let new_val = self.select_options[self.select_index].clone();
         let tool_kind = self.tools[self.tool_index].tool;
         let field_key = self.tools[self.tool_index].fields[self.field_index]
             .key
