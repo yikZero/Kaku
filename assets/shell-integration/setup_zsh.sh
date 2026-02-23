@@ -66,6 +66,9 @@ fi
 USER_CONFIG_DIR="$HOME/.config/kaku/zsh"
 KAKU_INIT_FILE="$USER_CONFIG_DIR/kaku.zsh"
 STARSHIP_CONFIG="$HOME/.config/starship.toml"
+YAZI_CONFIG_DIR="$HOME/.config/yazi"
+YAZI_CONFIG_FILE="$YAZI_CONFIG_DIR/yazi.toml"
+YAZI_THEME_FILE="$YAZI_CONFIG_DIR/theme.toml"
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
 BACKUP_SUFFIX=".kaku-backup-$(date +%s)"
 ZSHRC_BACKED_UP=0
@@ -153,6 +156,27 @@ EOF
 	if [[ "$starship_cloud_patched" == "true" ]]; then
 		echo -e "  ${GREEN}✓${NC} ${BOLD}Prompt${NC}      Initialized cloud context defaults in starship.toml"
 	fi
+fi
+
+# Initialize Yazi layout config if the user has not created one yet.
+if [[ ! -f "$YAZI_CONFIG_FILE" ]]; then
+	mkdir -p "$YAZI_CONFIG_DIR"
+	cat <<EOF >"$YAZI_CONFIG_FILE"
+[mgr]
+ratio = [3, 3, 10]
+EOF
+	echo -e "  ${GREEN}✓${NC} ${BOLD}Config${NC}      Initialized yazi.toml ${NC}(~/.config/yazi/yazi.toml)${NC}"
+fi
+
+# Initialize Yazi theme tweaks if the user has not created one yet.
+if [[ ! -f "$YAZI_THEME_FILE" ]]; then
+	mkdir -p "$YAZI_CONFIG_DIR"
+	cat <<EOF >"$YAZI_THEME_FILE"
+[mgr]
+border_symbol = "│"
+border_style = { fg = "#555555" }
+EOF
+	echo -e "  ${GREEN}✓${NC} ${BOLD}Config${NC}      Initialized yazi theme ${NC}(~/.config/yazi/theme.toml)${NC}"
 fi
 
 # 3. Create/Update Kaku Init File (managed by Kaku)
