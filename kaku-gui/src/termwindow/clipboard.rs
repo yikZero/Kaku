@@ -1,8 +1,8 @@
-use crate::termwindow::TermWindowNotif;
 use crate::TermWindow;
+use crate::termwindow::TermWindowNotif;
 use config::keyassignment::{ClipboardCopyDestination, ClipboardPasteSource};
-use mux::pane::Pane;
 use mux::Mux;
+use mux::pane::Pane;
 use smol::Timer;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,7 +23,10 @@ fn should_emit_ai_notice(kind: &str, message: &str) -> bool {
     let now = Instant::now();
     let mut guard = match AI_NOTICE_TIMESTAMPS.lock() {
         Ok(guard) => guard,
-        Err(_) => return true,
+        Err(e) => {
+            log::warn!("AI notice dedup mutex poisoned, allowing duplicate: {}", e);
+            return true;
+        }
     };
 
     if let Some(last_seen) = guard.get(&key) {

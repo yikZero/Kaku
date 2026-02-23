@@ -22,8 +22,8 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use wezterm_dynamic::{FromDynamic, ToDynamic};
 use wezterm_term::{KeyCode, KeyModifiers, MouseEvent};
-use window::color::LinearRgba;
 use window::WindowOps;
+use window::color::LinearRgba;
 
 // Kaku palette visual defaults. Used only when the user keeps the stock
 // command_palette_* colors, so custom config still takes precedence.
@@ -354,7 +354,10 @@ impl CommandPalette {
 
     fn palette_bounds(term_window: &TermWindow, metrics: &RenderMetrics) -> PaletteBounds {
         let top_bar_height = if term_window.show_tab_bar && !term_window.config.tab_bar_at_bottom {
-            term_window.tab_bar_pixel_height().unwrap_or(0.0)
+            term_window.tab_bar_pixel_height().unwrap_or_else(|e| {
+                log::debug!("Failed to get tab bar height, using 0: {}", e);
+                0.0
+            })
         } else {
             0.0
         };
@@ -442,12 +445,13 @@ impl CommandPalette {
         let mut elements = vec![];
 
         // Search box with explicit blinking caret so focus is obvious.
-        let mut search_row = vec![Element::new(&font, ElementContent::Text("⌘ ".to_string()))
-            .colors(ElementColors {
+        let mut search_row = vec![
+            Element::new(&font, ElementContent::Text("⌘ ".to_string())).colors(ElementColors {
                 border: BorderColor::default(),
                 bg: LinearRgba::TRANSPARENT.into(),
                 text: theme.accent.into(),
-            })];
+            }),
+        ];
         let caret = if cursor_visible { "▏" } else { " " };
         if selection.is_empty() {
             search_row.push(
@@ -769,10 +773,10 @@ impl CommandPalette {
     fn activate_selected(&self, term_window: &mut TermWindow) -> bool {
         let selected_idx = *self.selected_row.borrow();
         let alias_idx = match self.matches.borrow().as_ref() {
-            None => return true,
+            None => return false,
             Some(results) => match results.matches.get(selected_idx) {
                 Some(i) => *i,
-                None => return true,
+                None => return false,
             },
         };
         let item = &self.commands[alias_idx];
@@ -781,13 +785,19 @@ impl CommandPalette {
         }
         term_window.cancel_modal();
 
-        if let Some(pane) = term_window.get_active_pane_or_overlay() {
-            if let Err(err) = term_window.perform_key_assignment(&pane, &item.action) {
-                log::error!("Error while performing {item:?}: {err:#}");
-                term_window.show_toast(format!("Command failed: {}", err));
+        let result = if let Some(pane) = term_window.get_active_pane_or_overlay() {
+            match term_window.perform_key_assignment(&pane, &item.action) {
+                Ok(_) => true,
+                Err(err) => {
+                    log::error!("Error while performing {item:?}: {err:#}");
+                    term_window.show_toast(format!("Command failed: {}", err));
+                    false
+                }
             }
-        }
-        true
+        } else {
+            false
+        };
+        result
     }
 
     fn pick_row_from_point(
@@ -887,7 +897,10 @@ impl Modal for CommandPalette {
                         .pick_row_from_point(abs_x, abs_y, term_window)
                         .is_some()
                 {
-                    self.activate_selected(term_window);
+                    // Note: activate_selected returns false on failure, but the modal
+                    // dismissal and error toast are handled internally. We intentionally
+                    // don't propagate the failure here as the UI already gave feedback.
+                    let _ = self.activate_selected(term_window);
                 }
             }
             _ => {}
@@ -952,7 +965,10 @@ impl Modal for CommandPalette {
                 needs_invalidate = true;
             }
             (KeyCode::Enter, KeyModifiers::NONE) => {
-                self.activate_selected(term_window);
+                // activate_selected returns false on failure, but modal dismissal
+                // and error toast are handled internally. Return true to consume
+                // the key event regardless of command success.
+                let _ = self.activate_selected(term_window);
                 return Ok(true);
             }
             // Swallow unhandled keys while palette is open so input never falls through

@@ -914,11 +914,20 @@ impl super::TermWindow {
                         }
                     }
                     Key::Composed(text) => {
-                        for c in text.chars() {
+                        let chars: Vec<char> = text.chars().collect();
+                        for (idx, c) in chars.iter().enumerate() {
                             if let Err(err) =
-                                modal.key_down(::termwiz::input::KeyCode::Char(c), modal_mods, self)
+                                modal.key_down(::termwiz::input::KeyCode::Char(*c), modal_mods, self)
                             {
-                                log::error!("Error dispatching composed key to modal: {err:#}");
+                                let remaining = chars.len().saturating_sub(idx + 1);
+                                log::error!(
+                                    "Error dispatching composed key '{}' to modal: {err:#}; \
+                                     remaining {} character(s) in this composed sequence not dispatched",
+                                    c,
+                                    remaining
+                                );
+                                // Stop dispatching on first error to avoid cascading issues
+                                // if the modal has entered an invalid state
                                 break;
                             }
                         }
