@@ -414,9 +414,8 @@ impl GuiFrontEnd {
         }
         refresh_fast_config_snapshot();
 
-        // Build the initial menu bar synchronously during startup.
-        // AppKit may inspect menu item selectors during reopen events,
-        // so avoid deferring the first menubar reconstruction.
+        // Build the initial menubar synchronously so AppKit has selectors
+        // registered before users hit menu actions or key equivalents.
         crate::commands::CommandDef::recreate_menubar(&config::configuration());
 
         Ok(front_end)

@@ -131,14 +131,22 @@ fn set_default_role_handler_for_content_type(
 
 impl ConnectionOps for Connection {
     fn name(&self) -> String {
-        if let Ok(vers) = SoftwareVersion::load() {
-            format!(
-                "{} {} ({})",
-                vers.product_name, vers.product_user_visible_version, vers.product_build_version
-            )
-        } else {
-            "macOS".to_string()
-        }
+        use std::sync::OnceLock;
+        static CACHED_NAME: OnceLock<String> = OnceLock::new();
+        CACHED_NAME
+            .get_or_init(|| {
+                if let Ok(vers) = SoftwareVersion::load() {
+                    format!(
+                        "{} {} ({})",
+                        vers.product_name,
+                        vers.product_user_visible_version,
+                        vers.product_build_version
+                    )
+                } else {
+                    "macOS".to_string()
+                }
+            })
+            .clone()
     }
 
     fn default_dpi(&self) -> f64 {

@@ -6,6 +6,14 @@ use anyhow::Context;
 use config::{Config, FontAttributes};
 use rangeset::RangeSet;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+lazy_static::lazy_static! {
+    /// Cache for font dir scan results. The key is the sorted list of font_dirs
+    /// paths used for the scan, so that if config changes the dirs we re-scan.
+    static ref FONT_DIRS_CACHE: Mutex<Option<(Vec<PathBuf>, Vec<ParsedFont>)>> = Mutex::new(None);
+}
 
 pub struct FontDatabase {
     by_full_name: HashMap<String, Vec<ParsedFont>>,
@@ -33,11 +41,10 @@ impl FontDatabase {
         }
     }
 
-    /// Build up the database from the fonts found in the configured font dirs
-    /// and from the built-in selection of fonts
-    pub fn with_font_dirs(config: &Config) -> anyhow::Result<Self> {
+    /// Scan the given font dirs and return the parsed font info.
+    fn scan_font_dirs(font_dirs: &[PathBuf]) -> Vec<ParsedFont> {
         let mut font_info = vec![];
-        for path in &config.font_dirs {
+        for path in font_dirs {
             for entry in walkdir::WalkDir::new(path).into_iter() {
                 let entry = match entry {
                     Ok(entry) => entry,
@@ -53,6 +60,37 @@ impl FontDatabase {
                     .ok();
             }
         }
+        font_info
+    }
+
+    /// Prewarm the font dir scan cache in a background thread.
+    /// Safe to call concurrently: the cache is a Mutex<Option<...>>.
+    pub fn prewarm_font_dirs(font_dirs: &[PathBuf]) {
+        let font_info = Self::scan_font_dirs(font_dirs);
+        let mut cache = FONT_DIRS_CACHE.lock().unwrap();
+        *cache = Some((font_dirs.to_vec(), font_info));
+    }
+
+    /// Build up the database from the fonts found in the configured font dirs
+    /// and from the built-in selection of fonts
+    pub fn with_font_dirs(config: &Config) -> anyhow::Result<Self> {
+        let font_info = {
+            let mut cache = FONT_DIRS_CACHE.lock().unwrap();
+            if let Some((ref cached_dirs, ref cached_info)) = *cache {
+                if cached_dirs == &config.font_dirs {
+                    let info = cached_info.clone();
+                    // Take the cache so config_changed re-scans
+                    *cache = None;
+                    Some(info)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        let font_info = font_info.unwrap_or_else(|| Self::scan_font_dirs(&config.font_dirs));
 
         let mut db = Self::new();
         db.load_font_info(font_info);

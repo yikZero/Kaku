@@ -30,6 +30,10 @@ pub fn default_dpi() -> f64 {
     }
 }
 
+pub fn drain_spawn_queue_burst(max_funcs: usize) -> bool {
+    spawn::run_spawn_queue_burst(max_funcs)
+}
+
 mod egl;
 
 pub use bitmaps::{BitmapImage, Image};

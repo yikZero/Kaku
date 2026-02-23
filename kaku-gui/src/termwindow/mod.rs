@@ -1062,6 +1062,14 @@ impl TermWindow {
             }
         });
 
+        // Show the window early, before GPU initialization, so the user sees
+        // a window with the configured background color while GPU adapter
+        // enumeration, device creation and shader compilation run.
+        {
+            let mut myself = tw.borrow_mut();
+            myself.load_os_parameters();
+        }
+        window.show();
         let (gl, webgpu) = match config.front_end {
             FrontEndSelection::WebGpu => match WebGpuState::new(&window, dimensions, &config).await
             {
@@ -1107,8 +1115,6 @@ impl TermWindow {
                 myself.webgpu.replace(Rc::clone(&webgpu));
                 myself.created(RenderContext::WebGpu(Rc::clone(&webgpu)))?;
             }
-            myself.load_os_parameters();
-            window.show();
             myself.subscribe_to_pane_updates();
             myself.emit_window_event("window-config-reloaded", None);
             myself.emit_status_event();

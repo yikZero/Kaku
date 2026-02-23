@@ -16,6 +16,10 @@ lazy_static::lazy_static! {
     pub(crate) static ref SPAWN_QUEUE: Arc<SpawnQueue> = Arc::new(SpawnQueue::new().expect("failed to create SpawnQueue"));
 }
 
+pub(crate) fn run_spawn_queue_burst(max_funcs: usize) -> bool {
+    SPAWN_QUEUE.run_burst(max_funcs)
+}
+
 struct InstrumentedSpawnFunc {
     func: SpawnFunc,
     at: Instant,
@@ -76,6 +80,10 @@ impl SpawnQueue {
         self.run_impl()
     }
 
+    pub fn run_burst(&self, max_funcs: usize) -> bool {
+        self.run_impl_burst(max_funcs)
+    }
+
     // This needs to be a separate function from the loop in `run`
     // in order for the lock to be released before we call the
     // returned function
@@ -133,6 +141,17 @@ impl SpawnQueue {
     fn run_impl(&self) -> bool {
         self.event_handle.reset_event();
         while let Some(func) = self.pop_func() {
+            func();
+        }
+        self.has_any_queued()
+    }
+
+    fn run_impl_burst(&self, max_funcs: usize) -> bool {
+        self.event_handle.reset_event();
+        for _ in 0..max_funcs {
+            let Some(func) = self.pop_func() else {
+                break;
+            };
             func();
         }
         self.has_any_queued()
@@ -198,6 +217,19 @@ impl SpawnQueue {
         self.has_any_queued()
     }
 
+    fn run_impl_burst(&self, max_funcs: usize) -> bool {
+        for _ in 0..max_funcs {
+            let Some(func) = self.pop_func() else {
+                break;
+            };
+            func();
+        }
+        let mut byte = [0u8; 64];
+        use std::io::Read;
+        Self::lock_recover(&self.read, "read").read(&mut byte).ok();
+        self.has_any_queued()
+    }
+
     pub(crate) fn raw_fd(&self) -> std::os::unix::io::RawFd {
         Self::lock_recover(&self.read, "read").as_raw_fd()
     }
@@ -254,8 +286,11 @@ impl SpawnQueue {
         // Process a burst each wakeup so chained high-priority GUI work
         // (SpawnWindow -> reconcile -> new_window) doesn't get stretched
         // across multiple runloop turns.
-        const MAX_FUNCS_PER_WAKE: usize = 64;
-        for _ in 0..MAX_FUNCS_PER_WAKE {
+        self.run_impl_burst(64)
+    }
+
+    fn run_impl_burst(&self, max_funcs: usize) -> bool {
+        for _ in 0..max_funcs {
             let Some(func) = self.pop_func() else {
                 break;
             };

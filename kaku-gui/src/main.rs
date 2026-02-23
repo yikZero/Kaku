@@ -630,14 +630,15 @@ fn run_terminal_gui(opts: StartCommand, default_domain_name: Option<String>) -> 
 
     let config = config::configuration();
 
-    // Prewarm the built-in font FreeType cache in a background thread so that
-    // FontConfiguration::new() in new_window() hits the static cache instead of
-    // blocking the async startup path.  Safe to call concurrently: the cache is
-    // a Mutex<Option<...>> and FontDatabase::with_built_in() is idempotent.
+    // Prewarm font caches in a background thread so that
+    // FontConfiguration::new() in new_window() hits warm caches instead of
+    // blocking the async startup path.
+    let font_dirs = config.font_dirs.clone();
     std::thread::Builder::new()
         .name("font-prewarm".into())
-        .spawn(|| {
+        .spawn(move || {
             let _ = wezterm_font::db::FontDatabase::with_built_in();
+            wezterm_font::db::FontDatabase::prewarm_font_dirs(&font_dirs);
         })
         .ok();
 
@@ -700,6 +701,9 @@ fn run_terminal_gui(opts: StartCommand, default_domain_name: Option<String>) -> 
         drop(activity);
     })
     .detach();
+    // Kick the startup future once so window creation can get underway
+    // before entering the main loop, without blocking too long here.
+    let _ = ::window::drain_spawn_queue_burst(8);
 
     maybe_show_configuration_error_window();
     gui.run_forever()
