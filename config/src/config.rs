@@ -2091,6 +2091,12 @@ fn default_update_interval() -> u64 {
 }
 
 fn default_prefer_egl() -> bool {
+    // MetalANGLE via EGL is the preferred path on macOS in general, but
+    // older Intel Macs can abort during startup inside the bundled ANGLE
+    // stack. Keep EGL opt-in there and preserve the safer CGL fallback.
+    if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        return false;
+    }
     !cfg!(windows)
 }
 
