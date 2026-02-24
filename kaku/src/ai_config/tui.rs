@@ -2255,7 +2255,7 @@ fn save_field(tool: Tool, field_key: &str, new_val: &str) -> anyhow::Result<()> 
 
     let output = serde_json::to_string_pretty(&parsed).context("serialize config")?;
     if is_jsonc_path(&path) {
-        eprintln!(
+        log::info!(
             "Note: {} comments will be removed when Kaku rewrites this file.",
             path.display()
         );

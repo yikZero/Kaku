@@ -92,24 +92,7 @@ base_url = \"{DEFAULT_BASE_URL}\"\n"
 /// Returns an error if the file cannot be read or written.
 fn ensure_required_keys(path: &Path) -> anyhow::Result<()> {
     let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let mut updated = raw.trim_end().to_string();
-    let mut changed = false;
-
-    if !toml_has_key(&raw, "model") {
-        if !updated.is_empty() {
-            updated.push('\n');
-        }
-        updated.push_str(&format!("model = \"{DEFAULT_MODEL}\"\n"));
-        changed = true;
-    }
-
-    if !toml_has_key(&raw, "base_url") {
-        if !updated.is_empty() {
-            updated.push('\n');
-        }
-        updated.push_str(&format!("base_url = \"{DEFAULT_BASE_URL}\"\n"));
-        changed = true;
-    }
+    let (updated, changed) = ensure_required_keys_in_content(&raw);
 
     if changed {
         std::fs::write(path, updated.as_bytes())
@@ -118,10 +101,59 @@ fn ensure_required_keys(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Checks if a TOML key exists in the given content (ignoring comments and section headers).
+fn ensure_required_keys_in_content(raw: &str) -> (String, bool) {
+    let mut insert_lines = Vec::new();
+    if !top_level_toml_has_key(raw, "model") {
+        insert_lines.push(format!("model = \"{DEFAULT_MODEL}\""));
+    }
+    if !top_level_toml_has_key(raw, "base_url") {
+        insert_lines.push(format!("base_url = \"{DEFAULT_BASE_URL}\""));
+    }
+
+    if insert_lines.is_empty() {
+        return (raw.to_string(), false);
+    }
+
+    let insert_block = format!("{}\n", insert_lines.join("\n"));
+    let insert_at = first_table_header_offset(raw).unwrap_or(raw.len());
+    let (before, after) = raw.split_at(insert_at);
+    let mut updated = String::with_capacity(raw.len() + insert_block.len() + 2);
+
+    let before_trimmed = before.trim_end_matches(['\r', '\n']);
+    updated.push_str(before_trimmed);
+    if !before_trimmed.is_empty() {
+        updated.push('\n');
+    }
+    updated.push_str(&insert_block);
+    if !after.is_empty() {
+        updated.push_str(after.trim_start_matches(['\r', '\n']));
+    }
+
+    (updated, true)
+}
+
+fn first_table_header_offset(content: &str) -> Option<usize> {
+    let mut offset = 0usize;
+    for line in content.split_inclusive('\n') {
+        let head = line.split('#').next().unwrap_or("").trim_start();
+        if head.starts_with('[') {
+            return Some(offset);
+        }
+        offset += line.len();
+    }
+
+    let trailing = &content[offset..];
+    let head = trailing.split('#').next().unwrap_or("").trim_start();
+    if head.starts_with('[') {
+        return Some(offset);
+    }
+    None
+}
+
+/// Checks if a TOML top-level key exists in the given content.
 ///
-/// This is a simple parser that looks for `key = value` patterns, skipping lines
-/// that are comments (starting with #) or section headers (starting with [).
+/// This only scans lines before the first table header. Keys inside `[section]`
+/// tables do not count as top-level keys.
 ///
 /// # Arguments
 /// * `content` - The TOML file content to search
@@ -129,11 +161,14 @@ fn ensure_required_keys(path: &Path) -> anyhow::Result<()> {
 ///
 /// # Returns
 /// `true` if the key is found, `false` otherwise
-fn toml_has_key(content: &str, key: &str) -> bool {
+fn top_level_toml_has_key(content: &str, key: &str) -> bool {
     for line in content.lines() {
         let head = line.split('#').next().unwrap_or("").trim();
-        if head.is_empty() || head.starts_with('[') {
+        if head.is_empty() {
             continue;
+        }
+        if head.starts_with('[') {
+            break;
         }
         if let Some((name, _)) = head.split_once('=') {
             if name.trim() == key {
@@ -142,4 +177,50 @@ fn toml_has_key(content: &str, key: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_level_key_check_ignores_table_keys() {
+        let content = r#"
+enabled = true
+
+[provider]
+model = "nested"
+"#;
+        assert!(!top_level_toml_has_key(content, "model"));
+        assert!(top_level_toml_has_key(content, "enabled"));
+    }
+
+    #[test]
+    fn inserts_missing_required_keys_before_first_table() {
+        let content = r#"# header
+enabled = true
+
+[provider]
+api_key = "x"
+"#;
+        let (updated, changed) = ensure_required_keys_in_content(content);
+        assert!(changed);
+        let model_pos = updated.find("model = ").expect("model inserted");
+        let base_pos = updated.find("base_url = ").expect("base_url inserted");
+        let table_pos = updated.find("[provider]").expect("table header");
+        assert!(model_pos < table_pos);
+        assert!(base_pos < table_pos);
+        assert!(updated.contains("enabled = true"));
+    }
+
+    #[test]
+    fn preserves_existing_top_level_required_keys() {
+        let content = format!(
+            "enabled = true\nmodel = \"{}\"\nbase_url = \"{}\"\n[provider]\nname = \"x\"\n",
+            DEFAULT_MODEL, DEFAULT_BASE_URL
+        );
+        let (updated, changed) = ensure_required_keys_in_content(&content);
+        assert!(!changed);
+        assert_eq!(updated, content);
+    }
 }

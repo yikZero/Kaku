@@ -277,11 +277,15 @@ fn run() -> anyhow::Result<()> {
     let opts = Opt::parse();
 
     let cmd = if let Some(cmd) = opts.cmd.as_ref().cloned() {
-        cmd
+        Some(cmd)
     } else if should_show_main_menu(&opts) {
         select_main_menu_command()?
     } else {
-        SubCommand::Start(StartCommand::default())
+        Some(SubCommand::Start(StartCommand::default()))
+    };
+
+    let Some(cmd) = cmd else {
+        return Ok(());
     };
 
     match cmd {
@@ -312,7 +316,7 @@ fn should_show_main_menu(opts: &Opt) -> bool {
         && std::io::stdout().is_terminal()
 }
 
-fn select_main_menu_command() -> anyhow::Result<SubCommand> {
+fn select_main_menu_command() -> anyhow::Result<Option<SubCommand>> {
     use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
     use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
@@ -449,56 +453,56 @@ fn select_main_menu_command() -> anyhow::Result<SubCommand> {
                         render_menu(selected, PURPLE_BOLD, BLUE, GRAY, PURPLE, RESET)?;
                     }
                 }
-                KeyCode::Enter => return Ok(to_subcommand(MENU_ITEMS[selected].2)),
+                KeyCode::Enter => return Ok(Some(to_subcommand(MENU_ITEMS[selected].2))),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    std::process::exit(0)
+                    return Ok(None);
                 }
                 KeyCode::Char('1') if can_use_menu_char_shortcut(key.modifiers) => {
-                    return Ok(to_subcommand(MenuChoice::Ai));
+                    return Ok(Some(to_subcommand(MenuChoice::Ai)));
                 }
                 KeyCode::Char('2') if can_use_menu_char_shortcut(key.modifiers) => {
-                    return Ok(to_subcommand(MenuChoice::Config));
+                    return Ok(Some(to_subcommand(MenuChoice::Config)));
                 }
                 KeyCode::Char('3') if can_use_menu_char_shortcut(key.modifiers) => {
-                    return Ok(to_subcommand(MenuChoice::Init));
+                    return Ok(Some(to_subcommand(MenuChoice::Init)));
                 }
                 KeyCode::Char('4') if can_use_menu_char_shortcut(key.modifiers) => {
-                    return Ok(to_subcommand(MenuChoice::Update));
+                    return Ok(Some(to_subcommand(MenuChoice::Update)));
                 }
                 KeyCode::Char('5') if can_use_menu_char_shortcut(key.modifiers) => {
-                    return Ok(to_subcommand(MenuChoice::Reset));
+                    return Ok(Some(to_subcommand(MenuChoice::Reset)));
                 }
                 KeyCode::Char('a') | KeyCode::Char('A')
                     if can_use_menu_char_shortcut(key.modifiers) =>
                 {
-                    return Ok(to_subcommand(MenuChoice::Ai));
+                    return Ok(Some(to_subcommand(MenuChoice::Ai)));
                 }
                 KeyCode::Char('c') | KeyCode::Char('C')
                     if can_use_menu_char_shortcut(key.modifiers) =>
                 {
-                    return Ok(to_subcommand(MenuChoice::Config));
+                    return Ok(Some(to_subcommand(MenuChoice::Config)));
                 }
                 KeyCode::Char('i') | KeyCode::Char('I')
                     if can_use_menu_char_shortcut(key.modifiers) =>
                 {
-                    return Ok(to_subcommand(MenuChoice::Init));
+                    return Ok(Some(to_subcommand(MenuChoice::Init)));
                 }
                 KeyCode::Char('u') | KeyCode::Char('U')
                     if can_use_menu_char_shortcut(key.modifiers) =>
                 {
-                    return Ok(to_subcommand(MenuChoice::Update));
+                    return Ok(Some(to_subcommand(MenuChoice::Update)));
                 }
                 KeyCode::Char('r') | KeyCode::Char('R')
                     if can_use_menu_char_shortcut(key.modifiers) =>
                 {
-                    return Ok(to_subcommand(MenuChoice::Reset));
+                    return Ok(Some(to_subcommand(MenuChoice::Reset)));
                 }
                 KeyCode::Char('q') | KeyCode::Char('Q')
                     if can_use_menu_char_shortcut(key.modifiers) =>
                 {
-                    std::process::exit(0)
+                    return Ok(None);
                 }
-                KeyCode::Esc => std::process::exit(0),
+                KeyCode::Esc => return Ok(None),
                 _ => {}
             },
             _ => {}
