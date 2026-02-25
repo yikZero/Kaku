@@ -7,7 +7,10 @@ use mlua::Value;
 use mux::termwiztermtab::TermWizTerminal;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::process::{Command, Stdio};
+use std::sync::{mpsc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 use termwiz::cell::{AttributeChange, CellAttributes, Intensity};
 use termwiz::color::AnsiColor;
 use termwiz::input::{InputEvent, KeyCode, KeyEvent};
@@ -136,14 +139,30 @@ pub fn show_debug_overlay(
 ) -> anyhow::Result<()> {
     term.no_grab_mouse_in_raw_mode();
 
-    let config::LoadedConfig { lua, .. } = config::Config::load();
+    let loaded = config::Config::load();
+    if let Err(err) = &loaded.config {
+        log::warn!(
+            "Doctor panel failed to load user config and will try a fallback Lua context: {:#}",
+            err
+        );
+    }
+    for warning in &loaded.warnings {
+        log::warn!("Doctor panel config warning: {}", warning);
+    }
+
+    let config::LoadedConfig { lua, .. } = loaded;
     // Try hard to fall back to some kind of working lua context even
     // if the user's config file is temporarily out of whack
     let lua = match lua {
         Some(lua) => lua,
-        None => match config::Config::try_default() {
-            Ok(config::LoadedConfig { lua: Some(lua), .. }) => lua,
-            _ => config::lua::make_lua_context(std::path::Path::new(""))?,
+        None => {
+            log::warn!(
+                "Doctor panel did not receive a Lua context from the loaded config; falling back"
+            );
+            match config::Config::try_default() {
+                Ok(config::LoadedConfig { lua: Some(lua), .. }) => lua,
+                _ => config::lua::make_lua_context(std::path::Path::new(""))?,
+            }
         },
     };
 
@@ -153,7 +172,7 @@ pub fn show_debug_overlay(
 
     let mut host = Some(LuaReplHost::new(lua));
 
-    term.render(&[Change::Title("Debug".to_string())])?;
+    term.render(&[Change::Title("Kaku Doctor".to_string())])?;
 
     fn print_new_log_entries(term: &mut TermWizTerminal) -> termwiz::Result<()> {
         let entries = env_bootstrap::ringlog::get_entries();
@@ -195,18 +214,23 @@ pub fn show_debug_overlay(
 
     let version = config::wezterm_version();
     let triple = config::wezterm_target_triple();
+    let mut doctor_snapshot = PendingDoctorSnapshot::spawn();
 
     term.render(&[Change::Text(format!(
-        "Debug Overlay\r\n\
+        "Kaku Doctor\r\n\
          Kaku version: {version} {triple}\r\n\
          Window Environment: {connection_info}\r\n\
          Lua Version: {lua_version}\r\n\
          {opengl_info}\r\n\
+         {}\
          Enter lua statements or expressions and hit Enter.\r\n\
          Press ESC or CTRL-D to exit\r\n",
+        doctor_snapshot.placeholder_text(),
     ))])?;
+    doctor_snapshot.render_if_ready(&mut term)?;
 
     loop {
+        doctor_snapshot.render_if_ready(&mut term)?;
         print_new_log_entries(&mut term)?;
         let mut editor = LineEditor::new(&mut term);
         editor.set_prompt("> ");
@@ -232,10 +256,246 @@ pub fn show_debug_overlay(
             if text != "nil" {
                 term.render(&[Change::Text(format!("{}\r\n", text.replace("\n", "\r\n")))])?;
             }
+            doctor_snapshot.render_if_ready(&mut term)?;
         } else {
             return Ok(());
         }
     }
+}
+
+struct PendingDoctorSnapshot {
+    receiver: Option<mpsc::Receiver<String>>,
+    rendered: bool,
+}
+
+impl PendingDoctorSnapshot {
+    fn spawn() -> Self {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = tx.send(doctor_snapshot_text());
+        });
+        Self {
+            receiver: Some(rx),
+            rendered: false,
+        }
+    }
+
+    fn placeholder_text(&self) -> &'static str {
+        "Doctor snapshot is capturing in background and will print below when ready.\r\n\r\n"
+    }
+
+    fn render_if_ready(&mut self, term: &mut TermWizTerminal) -> termwiz::Result<()> {
+        if self.rendered {
+            return Ok(());
+        }
+
+        let Some(rx) = self.receiver.as_ref() else {
+            return Ok(());
+        };
+
+        match rx.try_recv() {
+            Ok(text) => {
+                self.rendered = true;
+                self.receiver.take();
+                term.render(&[Change::Text(text)])
+            }
+            Err(mpsc::TryRecvError::Empty) => Ok(()),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.rendered = true;
+                self.receiver.take();
+                term.render(&[Change::Text(
+                    "Kaku Doctor Snapshot\r\nFailed to capture doctor snapshot in background.\r\n\r\n"
+                        .to_string(),
+                )])
+            }
+        }
+    }
+}
+
+fn doctor_snapshot_text() -> String {
+    let wrapper_hint = doctor_wrapper_repair_hint_text();
+    let Some(kaku_bin) = resolve_kaku_cli_for_doctor() else {
+        return format!(
+            "Kaku Doctor Snapshot\r\n\
+             {}\
+             kaku doctor unavailable because Kaku CLI binary was not found.\r\n\
+             Expected sibling binary named `kaku` next to `kaku-gui` or in /Applications/Kaku.app.\r\n\
+             \r\n",
+            wrapper_hint
+        );
+    };
+
+    // Run with a timeout so the panel does not stay stuck forever if the
+    // kaku subprocess hangs (e.g. wrapper on a slow network mount).
+    let mut child = match Command::new(&kaku_bin)
+        .arg("doctor")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) => {
+            return format!(
+                "Kaku Doctor Snapshot\r\n\
+                 {}\
+                 Failed to execute {} doctor\r\n\
+                 Error: {}\r\n\
+                 \r\n",
+                wrapper_hint,
+                kaku_bin.display(),
+                err
+            );
+        }
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let output_result = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break child.wait_with_output(),
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return format!(
+                    "Kaku Doctor Snapshot\r\n\
+                     {}\
+                     Timed out waiting for `kaku doctor` after 10 seconds.\r\n\
+                     The kaku binary may be inaccessible or hanging. Try running `kaku doctor` in a terminal.\r\n\
+                     \r\n",
+                    wrapper_hint
+                );
+            }
+            Err(err) => {
+                return format!(
+                    "Kaku Doctor Snapshot\r\n\
+                     {}\
+                     Failed while waiting for {} doctor\r\n\
+                     Error: {}\r\n\
+                     \r\n",
+                    wrapper_hint,
+                    kaku_bin.display(),
+                    err
+                );
+            }
+        }
+    };
+
+    match output_result {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let normalized = stdout.replace('\n', "\r\n");
+            format!("Kaku Doctor Snapshot\r\n{}{normalized}\r\n", wrapper_hint)
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).replace('\n', "\r\n");
+            format!(
+                "Kaku Doctor Snapshot\r\n\
+                 {}\
+                 Failed to run: {} doctor\r\n\
+                 Exit status: {}\r\n\
+                 {}\r\n",
+                wrapper_hint,
+                kaku_bin.display(),
+                output.status,
+                if stderr.is_empty() {
+                    "No stderr output".to_string()
+                } else {
+                    format!("stderr: {stderr}")
+                }
+            )
+        }
+        Err(err) => format!(
+            "Kaku Doctor Snapshot\r\n\
+             {}\
+             Failed to execute {} doctor\r\n\
+             Error: {}\r\n\
+             \r\n",
+            wrapper_hint,
+            kaku_bin.display(),
+            err
+        ),
+    }
+}
+
+fn doctor_wrapper_repair_hint_text() -> String {
+    let wrapper = config::HOME_DIR
+        .join(".config")
+        .join("kaku")
+        .join("zsh")
+        .join("bin")
+        .join("kaku");
+
+    if config::is_executable_file(&wrapper) {
+        return String::new();
+    }
+
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "Shell command entry is missing or not executable: {}\r\n",
+        wrapper.display()
+    ));
+    lines.push("Fix from a terminal, then reload zsh:\r\n".to_string());
+
+    if let Some(kaku_bin) = resolve_kaku_app_bin_for_repair() {
+        lines.push(format!("  {} init --update-only\r\n", kaku_bin.display()));
+    } else {
+        lines.push(
+            "  /Applications/Kaku.app/Contents/MacOS/kaku init --update-only\r\n".to_string(),
+        );
+        lines.push(
+            "  ~/Applications/Kaku.app/Contents/MacOS/kaku init --update-only\r\n".to_string(),
+        );
+    }
+    lines.push("  exec zsh -l\r\n".to_string());
+    lines.push("\r\n".to_string());
+
+    lines.concat()
+}
+
+fn resolve_kaku_cli_for_doctor() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("kaku"));
+        }
+    }
+
+    candidates.push(PathBuf::from("/Applications/Kaku.app/Contents/MacOS/kaku"));
+    candidates.push(
+        config::HOME_DIR
+            .join("Applications")
+            .join("Kaku.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("kaku"),
+    );
+
+    if let Some(path_os) = std::env::var_os("PATH") {
+        for entry in std::env::split_paths(&path_os) {
+            candidates.push(entry.join("kaku"));
+        }
+    }
+
+    candidates.into_iter().find(|p| config::is_executable_file(p))
+}
+
+fn resolve_kaku_app_bin_for_repair() -> Option<PathBuf> {
+    let candidates = [
+        PathBuf::from("/Applications/Kaku.app/Contents/MacOS/kaku"),
+        config::HOME_DIR
+            .join("Applications")
+            .join("Kaku.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("kaku"),
+    ];
+    candidates
+        .iter()
+        .find(|p| config::is_executable_file(p))
+        .cloned()
 }
 
 // A bit of indirection because spawn_into_main_thread wants the
