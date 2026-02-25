@@ -386,28 +386,12 @@ bindkey '^F' _kaku_mv_forward_char
 bindkey '^A' _kaku_mv_beginning_of_line
 bindkey '^E' _kaku_mv_end_of_line
 
-# Wrap delete widgets to auto-clear active region first, preventing accidental
-# multi-character deletes when the shell mark is stale from prior prompt selections.
-_kaku_backward_delete_char() {
-    emulate -L zsh
-    if _kaku_has_active_region; then
-        _kaku_deactivate_region 2>/dev/null || true
-    fi
-    zle backward-delete-char
-}
-_kaku_delete_char() {
-    emulate -L zsh
-    if _kaku_has_active_region; then
-        _kaku_deactivate_region 2>/dev/null || true
-    fi
-    zle delete-char
-}
-
-zle -N _kaku_backward_delete_char
-zle -N _kaku_delete_char
-bindkey '^?' _kaku_backward_delete_char
-bindkey '^H' _kaku_backward_delete_char
-bindkey '^[[3~' _kaku_delete_char
+# Bind delete keys to native zsh widgets. The Kaku GUI handles selection-aware
+# deletion directly (sending kill sequences via line_editor_selection), so the
+# shell side does not need a wrapper here.
+bindkey '^?' backward-delete-char
+bindkey '^H' backward-delete-char
+bindkey '^[[3~' delete-char
 bindkey '^G' send-break
 
 # Directory Navigation Options
@@ -678,6 +662,9 @@ fi
 # Also auto-detect 1Password SSH agent and add IdentitiesOnly=yes to prevent
 # "Too many authentication failures" caused by 1Password offering all stored keys.
 # Set KAKU_SSH_SKIP_1PASSWORD_FIX=1 to disable the 1Password behavior.
+# Guard: only define if no existing ssh function is present, so user-defined
+# wrappers (e.g. from fzf-ssh, autossh plugins) are not silently replaced.
+if ! typeset -f ssh > /dev/null 2>&1; then
 ssh() {
     local -a extra_opts=()
 
@@ -703,11 +690,14 @@ ssh() {
         command ssh "\${extra_opts[@]}" "\$@"
     fi
 }
+fi
 
 # Auto-set TERM to xterm-256color for sudo commands when running under kaku.
 # sudo usually resets TERMINFO_DIRS, so root processes (e.g. nano) can fail
 # with "unknown terminal type 'kaku'" even though Kaku set TERMINFO_DIRS for the
 # user shell. Set KAKU_SUDO_SKIP_TERM_FIX=1 to disable this behavior.
+# Guard: only define if no existing sudo function is present.
+if ! typeset -f sudo > /dev/null 2>&1; then
 sudo() {
     if [[ -z "\${KAKU_SUDO_SKIP_TERM_FIX-}" && "\$TERM" == "kaku" ]]; then
         TERM=xterm-256color command sudo "\$@"
@@ -715,12 +705,13 @@ sudo() {
         command sudo "\$@"
     fi
 }
+fi
 EOF
 
 echo -e "  ${GREEN}✓${NC} ${BOLD}Script${NC}      Generated kaku.zsh init script"
 
 # 4. Configure .zshrc
-SOURCE_LINE="[[ -f \"\$HOME/.config/kaku/zsh/kaku.zsh\" ]] && source \"\$HOME/.config/kaku/zsh/kaku.zsh\" # Kaku Shell Integration"
+SOURCE_LINE="[[ \"\${TERM:-}\" == \"kaku\" && -f \"\$HOME/.config/kaku/zsh/kaku.zsh\" ]] && source \"\$HOME/.config/kaku/zsh/kaku.zsh\" # Kaku Shell Integration"
 
 # Migrate legacy inline block from older versions to the single source-line model.
 cleanup_legacy_inline_block() {
@@ -797,6 +788,75 @@ END {
 
 cleanup_legacy_inline_block
 
+normalize_kaku_source_line() {
+	if [[ ! -f "$ZSHRC" ]]; then
+		return
+	fi
+
+	local tmp_file
+	tmp_file="$(mktemp "${TMPDIR:-/tmp}/kaku-zshrc.XXXXXX")"
+
+	# Exit codes: 0 = replaced exactly 1 line, 2 = collapsed duplicates, 3 = no match.
+	if awk -v source_line="$SOURCE_LINE" '
+BEGIN { replaced = 0; extra = 0 }
+{
+	if ($0 ~ /^[[:space:]]*#/ ) {
+		print
+		next
+	}
+
+	if ($0 ~ /^[[:space:]]*\[\[/ &&
+	    $0 ~ /kaku\/zsh\/kaku\.zsh/ &&
+	    $0 ~ /&&[[:space:]]*source[[:space:]]/) {
+		if (!replaced) {
+			print source_line
+			replaced = 1
+		} else {
+			extra++
+		}
+		next
+	}
+
+	print
+}
+END {
+	if (replaced && extra > 0) {
+		exit 2
+	} else if (replaced) {
+		exit 0
+	}
+	exit 3
+}
+' "$ZSHRC" >"$tmp_file"; then
+		if ! cmp -s "$ZSHRC" "$tmp_file"; then
+			backup_zshrc_once
+			mv "$tmp_file" "$ZSHRC"
+			echo -e "  ${GREEN}✓${NC} ${BOLD}Integrate${NC}   Updated Kaku source line in .zshrc"
+		else
+			rm -f "$tmp_file"
+		fi
+	else
+		# Capture $? before any `local` declaration; zsh resets $? to 0 on `local`.
+		local awk_status="$?"
+		if [[ "$awk_status" == "2" ]]; then
+			if ! cmp -s "$ZSHRC" "$tmp_file"; then
+				backup_zshrc_once
+				mv "$tmp_file" "$ZSHRC"
+				echo -e "  ${GREEN}✓${NC} ${BOLD}Integrate${NC}   Removed duplicate Kaku source line(s) from .zshrc"
+			else
+				rm -f "$tmp_file"
+			fi
+		else
+			rm -f "$tmp_file"
+			if [[ "$awk_status" != "3" ]]; then
+				echo -e "${YELLOW}Warning: failed to normalize Kaku source line in .zshrc; leaving it unchanged.${NC}"
+			fi
+		fi
+	fi
+}
+
+normalize_kaku_source_line
+
 has_kaku_source_line() {
 	if [[ ! -f "$ZSHRC" ]]; then
 		return 1
@@ -808,7 +868,7 @@ has_kaku_source_line() {
 	fi
 
 	# Fallback: accept equivalent active source lines while avoiding comment-only matches.
-	grep -Eq '^[[:space:]]*\[\[ -f .+kaku/zsh/kaku\.zsh.+\]\][[:space:]]*&&[[:space:]]*source[[:space:]].*kaku/zsh/kaku\.zsh([[:space:]]|$)' "$ZSHRC"
+	grep -Eq '^[[:space:]]*\[\[.*kaku/zsh/kaku\.zsh.*\]\][[:space:]]*&&[[:space:]]*source[[:space:]].*kaku/zsh/kaku\.zsh([[:space:]]|$)' "$ZSHRC"
 }
 
 # Check if the source line already exists
