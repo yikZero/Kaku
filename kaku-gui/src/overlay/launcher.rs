@@ -349,6 +349,10 @@ impl LauncherState {
                     &cmd.action,
                     KeyAssignment::ActivateTabRelative(_)
                         | KeyAssignment::ActivateTab(_)
+                        | KeyAssignment::SendString(_)
+                        | KeyAssignment::SendKey(_)
+                        | KeyAssignment::Nop
+                        | KeyAssignment::Multiple(_)
                         | KeyAssignment::SetPaneEncoding(_)
                 ) {
                     // Filter out some noisy, repetitive entries
@@ -370,7 +374,12 @@ impl LauncherState {
             for ((keycode, mods), entry) in keys {
                 if matches!(
                     &entry.action,
-                    KeyAssignment::ActivateTabRelative(_) | KeyAssignment::ActivateTab(_)
+                    KeyAssignment::ActivateTabRelative(_)
+                        | KeyAssignment::ActivateTab(_)
+                        | KeyAssignment::SendString(_)
+                        | KeyAssignment::SendKey(_)
+                        | KeyAssignment::Nop
+                        | KeyAssignment::Multiple(_)
                 ) {
                     // Filter out some noisy, repetitive entries
                     continue;
@@ -393,7 +402,6 @@ impl LauncherState {
                         keycode.to_string().escape_debug()
                     ),
                 };
-
                 key_entries.push(Entry {
                     label,
                     action: entry.action,
@@ -437,6 +445,13 @@ impl LauncherState {
         let colors = &config.resolved_palette;
         let launcher_label_fg = colors.launcher_label_fg;
         let launcher_label_bg = colors.launcher_label_bg;
+        let selected_bg = colors
+            .ansi
+            .as_ref()
+            .map(|ansi| ansi[5])
+            .or_else(|| colors.brights.as_ref().map(|brights| brights[5]));
+        let selected_bg_attr =
+            selected_bg.map(|bg| ColorAttribute::from(config::ColorSpec::Color(bg)));
 
         for (row_num, (entry_idx, entry)) in self
             .filtered_entries
@@ -451,9 +466,19 @@ impl LauncherState {
 
             let mut attr = CellAttributes::blank();
 
+            let mut used_reverse_for_selection = false;
             if entry_idx == self.active_idx {
-                changes.push(AttributeChange::Reverse(true).into());
-                attr.set_reverse(true);
+                if let Some(selected_bg_attr) = selected_bg_attr {
+                    changes.push(AttributeChange::Background(selected_bg_attr).into());
+                    changes
+                        .push(AttributeChange::Foreground(ColorAttribute::PaletteIndex(15)).into());
+                    attr.set_background(selected_bg_attr)
+                        .set_foreground(ColorAttribute::PaletteIndex(15));
+                } else {
+                    changes.push(AttributeChange::Reverse(true).into());
+                    attr.set_reverse(true);
+                    used_reverse_for_selection = true;
+                }
             }
 
             // from above we know that row_num <= max_items
@@ -490,7 +515,7 @@ impl LauncherState {
             changes.append(&mut line.changes(&attr));
             changes.push(Change::Text(" ".to_string()));
 
-            if entry_idx == self.active_idx {
+            if used_reverse_for_selection {
                 changes.push(AttributeChange::Reverse(false).into());
             }
             changes.push(Change::AllAttributes(CellAttributes::default()));
@@ -710,10 +735,6 @@ impl LauncherState {
                                 break;
                             }
                         }
-                    }
-                    if mouse_buttons != MouseButtons::NONE {
-                        // Treat any other mouse button as cancel
-                        break;
                     }
                 }
                 InputEvent::Key(KeyEvent {

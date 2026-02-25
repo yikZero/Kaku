@@ -806,6 +806,11 @@ local function inject_ai_status(pane, message)
   end)
 end
 
+local function inject_ai_status_and_finalize(pane, message)
+  inject_ai_status(pane, message)
+  finalize_shell_line(pane)
+end
+
 local function show_ai_loading_toast(window, pane)
   if not window or not pane then
     return
@@ -839,7 +844,7 @@ local function poll_ai_fix_job(window, pane, pane_id, job, failed_command, exit_
       clear_ai_fix_suggestion_state(pane_state)
       cleanup_ai_fix_job_files(job)
       ai_debug_log("ai_fix_job timeout pane_id=" .. pane_id)
-      inject_ai_status(pane, "Could not analyze this error right now.")
+      inject_ai_status_and_finalize(pane, "Could not analyze this error right now.")
       return
     end
 
@@ -860,7 +865,7 @@ local function poll_ai_fix_job(window, pane, pane_id, job, failed_command, exit_
   if status_code ~= 0 then
     clear_ai_fix_suggestion_state(pane_state)
     ai_debug_log("ai_fix_job failed pane_id=" .. pane_id .. " status=" .. tostring(status_code) .. " err=" .. tostring(stderr))
-    inject_ai_status(pane, "Could not analyze this error right now.")
+    inject_ai_status_and_finalize(pane, "Could not analyze this error right now.")
     return
   end
 
@@ -868,7 +873,7 @@ local function poll_ai_fix_job(window, pane, pane_id, job, failed_command, exit_
   if not result then
     clear_ai_fix_suggestion_state(pane_state)
     ai_debug_log("ai_fix_job invalid_response pane_id=" .. pane_id .. " err=" .. tostring(parse_err))
-    inject_ai_status(pane, "Could not analyze this error right now.")
+    inject_ai_status_and_finalize(pane, "Could not analyze this error right now.")
     return
   end
 
@@ -881,7 +886,7 @@ local function poll_ai_fix_job(window, pane, pane_id, job, failed_command, exit_
   local command = sanitize_suggested_command(result.command or "")
   if command == "" then
     local summary = normalize_ai_summary(result.summary or "", "No quick fix command found.")
-    inject_ai_status(pane, summary)
+    inject_ai_status_and_finalize(pane, summary)
     return
   end
 
@@ -1416,6 +1421,22 @@ local function tab_path_parts(tab)
   return parent, current
 end
 
+-- ===== Kaku Palette =====
+local KAKU_BLACK = '#15141b'
+local KAKU_ANSI_BLACK = '#110f18'
+local KAKU_WHITE = '#edecee'
+local KAKU_GRAY = '#6d6d6d'
+local KAKU_PURPLE = '#a277ff'
+-- Use rgba() here because config::RgbaColor does not accept #RRGGBBAA.
+local KAKU_PURPLE_FADING = 'rgba(61,55,94,0.5)'
+local KAKU_SURFACE = '#1f1d28'
+local KAKU_SURFACE_ACTIVE = '#29263c'
+local KAKU_GREEN = '#61ffca'
+local KAKU_ORANGE = '#ffca85'
+local KAKU_PINK = '#f694ff'
+local KAKU_BLUE = '#82e2ff'
+local KAKU_RED = '#ff6767'
+
 wezterm.on('format-tab-title', function(tab, tabs, _, effective_config, hover, max_width)
   -- Evict stale cache only on the first tab to avoid O(n²) across the render cycle
   if tab.tab_index == 0 then
@@ -1461,7 +1482,7 @@ wezterm.on('format-tab-title', function(tab, tabs, _, effective_config, hover, m
   end
   -- fallback defaults when palette entry or sub-field is absent
   if not fg then
-    fg = tab.is_active and '#edecee' or (hover and '#9b9b9b' or '#6b6b6b')
+    fg = tab.is_active and KAKU_WHITE or (hover and KAKU_WHITE or KAKU_GRAY)
   end
   return {
     { Attribute = { Intensity = intensity } },
@@ -1641,7 +1662,7 @@ wezterm.on('user-var-changed', function(window, pane, name, value)
     pane_state.pending_job_id = nil
     clear_ai_fix_suggestion_state(pane_state)
     ai_debug_log("user-var-changed ai request start failed err=" .. tostring(err))
-    inject_ai_status(pane, "Could not analyze this error right now.")
+    inject_ai_status_and_finalize(pane, "Could not analyze this error right now.")
   end
 end)
 
@@ -1660,13 +1681,13 @@ wezterm.on('update-right-status', function(window, pane)
   local text = wezterm.strftime('%H:%M')
   if clock_icon ~= '' then
     window:set_right_status(wezterm.format({
-      { Foreground = { Color = '#6b6b6b' } },
+      { Foreground = { Color = KAKU_GRAY } },
       { Text = ' ' .. clock_icon .. ' ' .. text .. ' ' },
     }))
     return
   end
   window:set_right_status(wezterm.format({
-    { Foreground = { Color = '#6b6b6b' } },
+    { Foreground = { Color = KAKU_GRAY } },
     { Text = ' ' .. text .. ' ' },
   }))
 end)
@@ -1763,8 +1784,8 @@ config.window_decorations = "INTEGRATED_BUTTONS|RESIZE|MACOS_FORCE_DISABLE_SHADO
 config.window_frame = {
   font = wezterm.font({ family = 'JetBrains Mono', weight = 'Regular' }),
   font_size = 13.0,
-  active_titlebar_bg = '#15141b',
-  inactive_titlebar_bg = '#15141b',
+  active_titlebar_bg = KAKU_BLACK,
+  inactive_titlebar_bg = KAKU_BLACK,
 }
 
 config.window_close_confirmation = 'NeverPrompt'
@@ -1783,53 +1804,52 @@ config.show_new_tab_button_in_tab_bar = false
 -- ===== Color Scheme =====
 local kaku_theme = {
   -- Background
-  foreground = '#edecee',
-  background = '#15141b',
+  foreground = KAKU_WHITE,
+  background = KAKU_BLACK,
 
   -- Cursor
-  cursor_bg = '#a277ff',
-  cursor_fg = '#15141b',
-  cursor_border = '#a277ff',
+  cursor_bg = KAKU_PURPLE,
+  cursor_fg = KAKU_BLACK,
+  cursor_border = KAKU_PURPLE,
 
   -- Selection
-  selection_bg = '#29263c',
+  selection_bg = KAKU_PURPLE_FADING,
   selection_fg = 'none',
 
   -- Normal colors (ANSI 0-7)
   ansi = {
-    '#110f18',  -- black
-    '#ff6767',  -- red
-    '#61ffca',  -- green
-    '#ffca85',  -- yellow
-    '#a277ff',  -- blue
-    '#a277ff',  -- magenta
-    '#61ffca',  -- cyan
-    '#edecee',  -- white
+    KAKU_ANSI_BLACK, -- black
+    KAKU_RED,     -- red
+    KAKU_GREEN,   -- green
+    KAKU_ORANGE,  -- yellow
+    KAKU_BLUE,    -- blue
+    KAKU_PURPLE,  -- magenta
+    KAKU_GREEN,   -- cyan
+    KAKU_WHITE,   -- white
   },
 
   -- Bright colors (ANSI 8-15)
   brights = {
-    '#4d4d4d',  -- bright black
-    '#ff6767',  -- bright red
-    '#61ffca',  -- bright green
-    '#ffca85',  -- bright yellow
-    '#a277ff',  -- bright blue
-    '#a277ff',  -- bright magenta
-    '#61ffca',  -- bright cyan
-    '#edecee',  -- bright white
+    KAKU_GRAY,    -- bright black
+    KAKU_RED,     -- bright red
+    KAKU_GREEN,   -- bright green
+    KAKU_ORANGE,  -- bright yellow
+    KAKU_BLUE,    -- bright blue
+    KAKU_PURPLE,  -- bright magenta
+    KAKU_GREEN,   -- bright cyan
+    KAKU_WHITE,   -- bright white
   },
 
-  -- Split separator color (increased contrast for better visibility)
-  split = '#3d3a4f',
+  split = KAKU_SURFACE_ACTIVE,
 
   -- Tab bar colors
   tab_bar = {
-    background = '#15141b',
-    inactive_tab_edge = '#15141b',
+    background = KAKU_BLACK,
+    inactive_tab_edge = KAKU_BLACK,
 
     active_tab = {
-      bg_color = '#29263c',
-      fg_color = '#edecee',
+      bg_color = KAKU_SURFACE_ACTIVE,
+      fg_color = KAKU_WHITE,
       intensity = 'Bold',
       underline = 'None',
       italic = false,
@@ -1837,25 +1857,25 @@ local kaku_theme = {
     },
 
     inactive_tab = {
-      bg_color = '#15141b',
-      fg_color = '#6b6b6b',
+      bg_color = KAKU_BLACK,
+      fg_color = KAKU_GRAY,
       intensity = 'Normal',
     },
 
     inactive_tab_hover = {
-      bg_color = '#1f1d28',
-      fg_color = '#9b9b9b',
+      bg_color = KAKU_SURFACE,
+      fg_color = KAKU_WHITE,
       italic = false,
     },
 
     new_tab = {
-      bg_color = '#15141b',
-      fg_color = '#6b6b6b',
+      bg_color = KAKU_BLACK,
+      fg_color = KAKU_GRAY,
     },
 
     new_tab_hover = {
-      bg_color = '#1f1d28',
-      fg_color = '#9b9b9b',
+      bg_color = KAKU_SURFACE,
+      fg_color = KAKU_WHITE,
     },
   },
 }

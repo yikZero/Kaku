@@ -19,6 +19,7 @@ use std::cell::{Ref, RefCell};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use wezterm_dynamic::{FromDynamic, ToDynamic};
 use wezterm_term::{KeyCode, KeyModifiers, MouseEvent};
@@ -49,6 +50,7 @@ struct CacheState {
     pixel_height: usize,
 }
 
+#[derive(Clone, Copy)]
 struct PaletteBounds {
     x: f32,
     y: f32,
@@ -74,7 +76,10 @@ pub struct CommandPalette {
     selected_row: RefCell<usize>,
     top_row: RefCell<usize>,
     max_rows_on_screen: RefCell<usize>,
+    font: Rc<wezterm_font::LoadedFont>,
+    font_metrics: RenderMetrics,
     commands: Vec<ExpandedCommand>,
+    search_index: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -137,6 +142,8 @@ fn build_commands(term_window: &mut TermWindow) -> Vec<ExpandedCommand> {
                 | KeyAssignment::SendKey(_)
                 | KeyAssignment::Nop
                 | KeyAssignment::Multiple(_)
+                | KeyAssignment::ShowLauncher
+                | KeyAssignment::ShowLauncherArgs(_)
                 | KeyAssignment::ActivateTab(_)
         )
     }
@@ -251,31 +258,142 @@ impl MatchResult {
     }
 }
 
-fn compute_matches(selection: &str, commands: &[ExpandedCommand]) -> Vec<usize> {
-    if selection.is_empty() {
-        commands.iter().enumerate().map(|(idx, _)| idx).collect()
-    } else {
-        let pattern = matcher_pattern(selection);
+impl CommandPalette {
+    fn visible_row_index(row: usize, top_row: usize, max_rows_on_screen: usize) -> Option<usize> {
+        if row < top_row || row >= top_row.saturating_add(max_rows_on_screen) {
+            None
+        } else {
+            Some(row - top_row)
+        }
+    }
 
-        let start = std::time::Instant::now();
-        let mut scores: Vec<MatchResult> = commands
-            .par_iter()
-            .enumerate()
-            .filter_map(|(row_idx, entry)| {
-                let group = entry.menubar.join(" ");
-                let text = format!("{group}: {}. {} {:?}", entry.brief, entry.doc, entry.action);
-                matcher_score(&pattern, &text)
-                    .map(|score| MatchResult::new(row_idx, score, selection, commands))
+    fn set_row_selected_style(row: &mut ComputedElement, selected: bool, theme: PaletteTheme) {
+        row.colors.bg = if selected {
+            theme.selection_bg.into()
+        } else {
+            LinearRgba::TRANSPARENT.into()
+        };
+
+        if let ComputedElementContent::Children(children) = &mut row.content {
+            if let Some(shortcut) = children.get_mut(1) {
+                shortcut.colors.text = if selected {
+                    theme.fg.into()
+                } else {
+                    theme.dim_fg.into()
+                };
+            }
+        }
+    }
+
+    fn retint_selection_rows(
+        elements: &mut [ComputedElement],
+        old_selected_row: usize,
+        new_selected_row: usize,
+        top_row: usize,
+        max_rows_on_screen: usize,
+        theme: PaletteTheme,
+    ) -> bool {
+        if old_selected_row == new_selected_row {
+            return false;
+        }
+
+        let root = match elements.first_mut() {
+            Some(root) => root,
+            None => return false,
+        };
+        let rows = match &mut root.content {
+            ComputedElementContent::Children(children) => children,
+            _ => return false,
+        };
+
+        let old_visible = Self::visible_row_index(old_selected_row, top_row, max_rows_on_screen);
+        let new_visible = Self::visible_row_index(new_selected_row, top_row, max_rows_on_screen);
+
+        if let Some(old_idx) = old_visible {
+            if let Some(row) = rows.get_mut(2 + old_idx) {
+                Self::set_row_selected_style(row, false, theme);
+            }
+        }
+        if let Some(new_idx) = new_visible {
+            if let Some(row) = rows.get_mut(2 + new_idx) {
+                Self::set_row_selected_style(row, true, theme);
+            }
+        }
+
+        true
+    }
+
+    fn palette_key_display(
+        key_display: String,
+        ui_rendering: ::window::UIKeyCapRendering,
+    ) -> String {
+        if ui_rendering == ::window::UIKeyCapRendering::AppleSymbols {
+            match key_display.as_str() {
+                "\u{21de}" => return "Fn \u{2191}".to_string(),
+                "\u{21df}" => return "Fn \u{2193}".to_string(),
+                _ => {}
+            }
+        }
+        key_display
+    }
+
+    fn build_search_index(commands: &[ExpandedCommand]) -> Vec<String> {
+        commands
+            .iter()
+            .map(|cmd| {
+                let mut text = String::new();
+                if !cmd.menubar.is_empty() {
+                    text.push_str(&cmd.menubar.join(" "));
+                    text.push_str(": ");
+                }
+                text.push_str(&cmd.brief);
+                if !cmd.doc.is_empty() {
+                    text.push_str(". ");
+                    text.push_str(&cmd.doc);
+                }
+                text
             })
-            .collect();
+            .collect()
+    }
+
+    fn compute_matches(
+        selection: &str,
+        commands: &[ExpandedCommand],
+        search_index: &[String],
+    ) -> Vec<usize> {
+        if selection.is_empty() {
+            return commands.iter().enumerate().map(|(idx, _)| idx).collect();
+        }
+
+        let pattern = matcher_pattern(selection);
+        let start = std::time::Instant::now();
+
+        let mut scores: Vec<MatchResult> = if search_index.len() < 256 {
+            search_index
+                .iter()
+                .enumerate()
+                .filter_map(|(row_idx, text)| {
+                    matcher_score(&pattern, text)
+                        .map(|score| MatchResult::new(row_idx, score, selection, commands))
+                })
+                .collect()
+        } else {
+            search_index
+                .par_iter()
+                .enumerate()
+                .filter_map(|(row_idx, text)| {
+                    matcher_score(&pattern, text)
+                        .map(|score| MatchResult::new(row_idx, score, selection, commands))
+                })
+                .collect()
+        };
+
         scores.sort_by(|a, b| a.score.cmp(&b.score).reverse());
         log::trace!("matching took {:?}", start.elapsed());
 
         scores.iter().map(|result| result.row_idx).collect()
     }
-}
 
-impl CommandPalette {
     fn mix_color(a: LinearRgba, b: LinearRgba, t: f32) -> LinearRgba {
         let t = t.clamp(0.0, 1.0);
         let (ar, ag, ab, aa) = a.tuple();
@@ -393,13 +511,22 @@ impl CommandPalette {
     }
 
     pub fn new(term_window: &mut TermWindow) -> Self {
+        let font = term_window
+            .fonts
+            .command_palette_font()
+            .expect("to resolve command palette font");
+        let font_metrics = RenderMetrics::with_font_metrics(&font.metrics());
         let commands = build_commands(term_window);
+        let search_index = Self::build_search_index(&commands);
 
         Self {
             element: RefCell::new(None),
             cache_state: RefCell::new(None),
             selection: RefCell::new(String::new()),
+            font,
+            font_metrics,
             commands,
+            search_index,
             matches: RefCell::new(None),
             selected_row: RefCell::new(0),
             top_row: RefCell::new(0),
@@ -409,6 +536,9 @@ impl CommandPalette {
 
     fn compute(
         term_window: &mut TermWindow,
+        font: &Rc<wezterm_font::LoadedFont>,
+        metrics: RenderMetrics,
+        bounds: PaletteBounds,
         selection: &str,
         commands: &[ExpandedCommand],
         matches: &MatchResults,
@@ -416,13 +546,7 @@ impl CommandPalette {
         selected_row: usize,
         top_row: usize,
     ) -> anyhow::Result<Vec<ComputedElement>> {
-        let font = term_window
-            .fonts
-            .command_palette_font()
-            .expect("to resolve command palette font");
-        let metrics = RenderMetrics::with_font_metrics(&font.metrics());
         let dimensions = term_window.dimensions;
-        let bounds = Self::palette_bounds(term_window, &metrics);
         let theme = Self::palette_theme(term_window);
         let epoch = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -569,7 +693,10 @@ impl CommandPalette {
                     want_none: false,
                     ui_key_cap_rendering: Some(ui_rendering),
                 });
-                let key_display = crate::inputmap::ui_key(keycode, ui_rendering);
+                let key_display = Self::palette_key_display(
+                    crate::inputmap::ui_key(keycode, ui_rendering),
+                    ui_rendering,
+                );
                 let key_str = if mod_string.is_empty() {
                     key_display
                 } else {
@@ -724,9 +851,6 @@ impl CommandPalette {
 
         *self.selected_row.borrow_mut() = next_row;
         *self.top_row.borrow_mut() = next_top;
-
-        // Clear element cache to trigger re-render with new selection.
-        self.element.borrow_mut().take();
         true
     }
 
@@ -843,7 +967,6 @@ impl CommandPalette {
             .saturating_sub(1);
         let selected = selected.min(limit);
         *self.selected_row.borrow_mut() = selected;
-        self.element.borrow_mut().take();
         if let Some(window) = term_window.window.as_ref() {
             window.invalidate();
         }
@@ -991,11 +1114,7 @@ impl Modal for CommandPalette {
 
         let mut results = self.matches.borrow_mut();
 
-        let font = term_window
-            .fonts
-            .command_palette_font()
-            .expect("to resolve char selection font");
-        let metrics = RenderMetrics::with_font_metrics(&font.metrics());
+        let metrics = self.font_metrics;
 
         // Calculate max rows based on actual palette height, accounting for row paddings.
         let bounds = Self::palette_bounds(term_window, &metrics);
@@ -1019,7 +1138,7 @@ impl Modal for CommandPalette {
         if rebuild_matches {
             results.replace(MatchResults {
                 selection: selection.to_string(),
-                matches: compute_matches(selection, &self.commands),
+                matches: Self::compute_matches(selection, &self.commands, &self.search_index),
             });
         }
         let matches = results.as_ref().unwrap();
@@ -1028,6 +1147,40 @@ impl Modal for CommandPalette {
         let selected_row = *self.selected_row.borrow();
         let top_row = *self.top_row.borrow();
         let dims = term_window.dimensions;
+
+        // Fast path: when only the selected row changed and the viewport is stable,
+        // update row highlight colors in-place without rebuilding the layout tree.
+        //
+        // Extract the old selected row under a short read-only borrow, then drop
+        // it before calling palette_theme so no RefCell is held across that call.
+        let fast_path_old_row: Option<usize> = {
+            let state = self.cache_state.borrow();
+            state.as_ref().and_then(|s| {
+                let stable_viewport = s.selection == selection
+                    && s.top_row == top_row
+                    && s.max_rows == max_rows_on_screen
+                    && s.pixel_width == dims.pixel_width
+                    && s.pixel_height == dims.pixel_height;
+                (stable_viewport && s.selected_row != selected_row).then_some(s.selected_row)
+            })
+        };
+        if let Some(old_row) = fast_path_old_row {
+            let theme = Self::palette_theme(term_window);
+            if let Some(elements) = self.element.borrow_mut().as_mut() {
+                if Self::retint_selection_rows(
+                    elements.as_mut_slice(),
+                    old_row,
+                    selected_row,
+                    top_row,
+                    max_rows_on_screen,
+                    theme,
+                ) {
+                    if let Some(state) = self.cache_state.borrow_mut().as_mut() {
+                        state.selected_row = selected_row;
+                    }
+                }
+            }
+        }
 
         let needs_rebuild = self.element.borrow().is_none()
             || self.cache_state.borrow().as_ref().map_or(true, |state| {
@@ -1042,6 +1195,9 @@ impl Modal for CommandPalette {
         if needs_rebuild {
             let element = Self::compute(
                 term_window,
+                &self.font,
+                metrics,
+                bounds,
                 selection,
                 &self.commands,
                 matches,

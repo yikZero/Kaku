@@ -1,16 +1,16 @@
 use crate::inputmap::InputMap;
+use KeyAssignment::*;
 use config::keyassignment::{ClipboardCopyDestination, ClipboardPasteSource, PaneEncoding, *};
 use config::window::WindowLevel;
 use config::{ConfigHandle, DeferredKeyCode};
-use mux::domain::DomainState;
 use mux::Mux;
+use mux::domain::DomainState;
 use ordered_float::NotNan;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use window::{KeyCode, Modifiers};
-use KeyAssignment::*;
 
 /// Describes an argument/parameter/context that is required
 /// in order for the command to have meaning.
@@ -220,7 +220,6 @@ impl CommandDef {
             SplitVertical(SpawnCommand::default()),
             CloseCurrentTab { confirm: true },
             CloseCurrentPane { confirm: true },
-            ShowLauncher,
             // Edit menu
             CopyTo(ClipboardCopyDestination::Clipboard),
             PasteFrom(ClipboardPasteSource::Clipboard),
@@ -417,6 +416,9 @@ impl CommandDef {
                 SpawnTab(SpawnTabDomain::CurrentPaneDomain | SpawnTabDomain::DefaultDomain) => {
                     "spawn_tab_default".to_string()
                 }
+                // Treat confirm/no-confirm variants as the same command in palette.
+                CloseCurrentTab { .. } => "close_current_tab".to_string(),
+                CloseCurrentPane { .. } => "close_current_pane".to_string(),
                 _ => format!("{action:?}"),
             }
         }
@@ -685,6 +687,7 @@ impl CommandDef {
                     EmitEvent(name) if name == "kaku-launch-yazi" => 23,
                     SplitVertical(_) | SplitHorizontal(_) | SplitPane(_) => 30,
                     CloseCurrentTab { .. } | CloseCurrentPane { .. } => 40,
+                    ActivateCommandPalette => 24,
                     ShowLauncher | ShowLauncherArgs(_) => 50,
                     AttachDomain(_) => 70,
                     DetachDomain(_) => 80,
@@ -703,7 +706,6 @@ impl CommandDef {
                     IncreaseFontSize => 20,
                     DecreaseFontSize => 30,
                     ResetFontAndWindowSize => 40,
-                    ActivateCommandPalette => 45,
                     ScrollToTop => 50,
                     ScrollToBottom => 51,
                     _ => 500,
@@ -751,7 +753,7 @@ impl CommandDef {
             match title {
                 "Shell" => match rank {
                     0..=20 => 1,  // New Window, New Tab
-                    21..=25 => 2, // AI Config, Lazygit, Yazi
+                    21..=25 => 2, // AI Config, Lazygit, Yazi, Command Palette
                     26..=35 => 3, // Split
                     36..=45 => 4, // Close
                     46..=55 => 5, // Launcher
@@ -1192,11 +1194,11 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             icon: None,
         },
         ShowDebugOverlay => CommandDef {
-            brief: "Debug Overlay".into(),
-            doc: "Open debug console".into(),
+            brief: "Kaku Doctor".into(),
+            doc: "Run kaku doctor in the current pane".into(),
             keys: vec![(Modifiers::CTRL.union(Modifiers::SHIFT), "l".into())],
             args: &[ArgType::ActiveWindow],
-            menubar: &["Help"],
+            menubar: &["Shell"],
             icon: None,
         },
         InputSelector(_) => CommandDef {
@@ -1491,7 +1493,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
                 }
             } else if name == "kaku-launch-yazi" {
                 CommandDef {
-                    brief: "Yazi".into(),
+                    brief: "Yazi File Manager".into(),
                     doc: "Open Yazi file manager".into(),
                     keys: vec![(Modifiers::SUPER.union(Modifiers::SHIFT), "y".into())],
                     args: &[ArgType::ActiveWindow],
@@ -2022,9 +2024,9 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         ShowLauncherArgs(_) | ShowLauncher => CommandDef {
             brief: "Launcher".into(),
             doc: "Open command launcher".into(),
-            keys: vec![(Modifiers::SUPER.union(Modifiers::SHIFT), "l".into())],
+            keys: vec![],
             args: &[ArgType::ActiveWindow],
-            menubar: &["Shell"],
+            menubar: &[],
             icon: None,
         },
         ShowTabNavigator => CommandDef {
@@ -2410,7 +2412,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             doc: "Open command palette".into(),
             keys: vec![(Modifiers::SUPER.union(Modifiers::SHIFT), "p".into())],
             args: &[ArgType::ActivePane],
-            menubar: &["View"],
+            menubar: &["Shell"],
             icon: None,
         },
     })
@@ -2527,7 +2529,6 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         ActivatePaneDirection(PaneDirection::Down),
         TogglePaneZoomState,
         ActivateLastTab,
-        ShowLauncher,
         ShowTabNavigator,
         // ----------------- Help
         OpenUri("https://github.com/tw93/Kaku".to_string()),

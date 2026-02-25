@@ -34,7 +34,7 @@ Please include:
 Add anything helpful if available:
 - screenshots or recordings
 - relevant config snippet from `~/.config/kaku/kaku.lua`
-- debug overlay header and related log lines
+- Doctor panel header and related log lines
 
 You can submit first with minimal info; maintainers may ask follow-up questions.
 

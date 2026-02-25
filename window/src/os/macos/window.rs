@@ -1146,6 +1146,14 @@ impl WindowOps for Window {
     }
 
     fn show(&self) {
+        // Try synchronous show first when called from the main thread;
+        // fall back to the deferred spawn path otherwise.
+        if let Some(conn) = Connection::get() {
+            if let Some(handle) = conn.window_by_id(self.id) {
+                handle.borrow_mut().show();
+                return;
+            }
+        }
         Connection::with_window_inner(self.id, |inner| {
             inner.show();
             Ok(())

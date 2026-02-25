@@ -48,6 +48,7 @@ Kaku comes with intuitive macOS-native shortcuts:
 | Zoom/Unzoom Pane | `Cmd + Shift + Enter` |
 | Resize Pane | `Cmd + Ctrl + Arrows` |
 | Clear Screen | `Cmd + K` |
+| Doctor Panel | `Ctrl + Shift + L` |
 | Kaku AI Settings | `Cmd + Shift + A` |
 | Kaku Assistant Apply Suggestion | `Cmd + Shift + E` |
 | Open Lazygit | `Cmd + Shift + G` |
@@ -77,7 +78,7 @@ Optional CLI tools installed via Homebrew during `kaku init`:
 
 Kaku uses `~/.config/kaku/kaku.lua` for configuration, fully compatible with WezTerm's Lua API, with built-in defaults at `Kaku.app/Contents/Resources/kaku.lua` as fallback.
 
-Run `kaku` in your terminal to see all available commands such as `kaku update`, `kaku reset`, `kaku config`, and `kaku ai`.
+Run `kaku` in your terminal to see all available commands such as `kaku ai`, `kaku config`, `kaku doctor`, `kaku update`, and `kaku reset`.
 
 ## Kaku AI
 

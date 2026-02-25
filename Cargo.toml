@@ -23,8 +23,8 @@ exclude = [
 opt-level = 3
 debug = false
 strip = true
-lto = "thin"
-codegen-units = 16
+lto = "fat"
+codegen-units = 1
 panic = "abort"
 
 # Optimized release profile for smaller binary size

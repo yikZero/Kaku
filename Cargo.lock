@@ -2491,7 +2491,7 @@ name = "kaku"
 version = "0.5.0"
 dependencies = [
  "anyhow",
- "base64 0.21.7",
+ "base64 0.22.1",
  "cc",
  "chrono",
  "clap",
@@ -2502,11 +2502,8 @@ dependencies = [
  "crossterm",
  "embed-resource",
  "env-bootstrap",
- "filedescriptor",
  "hostname",
  "humantime",
- "image",
- "libc",
  "log",
  "mux",
  "portable-pty",
@@ -2521,13 +2518,13 @@ dependencies = [
  "termios",
  "termwiz",
  "termwiz-funcs",
- "textwrap",
  "toml 0.8.23",
  "umask",
  "url",
  "wezterm-client",
  "wezterm-gui-subcommands",
  "wezterm-term",
+ "wezterm-version",
  "winapi",
 ]
 

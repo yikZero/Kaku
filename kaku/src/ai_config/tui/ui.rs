@@ -3,7 +3,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
-use super::super::theme::{BG, GREEN, MUTED, PANEL, PURPLE, RED, TEXT, YELLOW};
+use super::super::theme::{bg, green, muted, panel, purple, red, text_fg, yellow};
 use super::App;
 
 pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
@@ -18,7 +18,7 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
     // Clear frame content first to avoid stale glyph artifacts when redrawing
     // in non-alternate-screen mode.
     frame.render_widget(Clear, area);
-    frame.render_widget(Block::default().style(Style::default().bg(BG())), area);
+    frame.render_widget(Block::default().style(Style::default().bg(bg())), area);
 
     let chunks = Layout::vertical([
         Constraint::Length(2), // logo header
@@ -42,10 +42,10 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect) {
     let line = Line::from(vec![
         Span::styled(
             "  Kaku",
-            Style::default().fg(PURPLE()).add_modifier(Modifier::BOLD),
+            Style::default().fg(purple()).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" · ", Style::default().fg(MUTED())),
-        Span::styled("AI Settings", Style::default().fg(TEXT())),
+        Span::styled(" · ", Style::default().fg(muted())),
+        Span::styled("AI Settings", Style::default().fg(text_fg())),
     ]);
     frame.render_widget(Paragraph::new(vec![line, Line::from("")]), area);
 }
@@ -61,22 +61,27 @@ fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         let home = config::HOME_DIR.display().to_string();
         let short_path = path_str.replace(&home, "~");
 
-        let tool_style = if tool.installed {
-            Style::default().fg(GREEN()).add_modifier(Modifier::BOLD)
+        let tool_style = if is_current_tool {
+            Style::default().fg(purple()).add_modifier(Modifier::BOLD)
+        } else if tool.installed {
+            Style::default().fg(green()).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(MUTED())
+            Style::default().fg(muted())
         };
 
         let header = Line::from(vec![
             Span::styled(
-                if is_current_tool { "▸ " } else { "  " },
-                Style::default().fg(PURPLE()),
+                if is_current_tool { "➤ " } else { "  " },
+                Style::default().fg(purple()).add_modifier(Modifier::BOLD),
             ),
             Span::styled(tool.tool.label(), tool_style),
             Span::styled("  ", Style::default()),
-            Span::styled(short_path, Style::default().fg(MUTED())),
+            Span::styled(
+                short_path,
+                Style::default().fg(if is_current_tool { text_fg() } else { muted() }),
+            ),
             if !tool.installed {
-                Span::styled("  (not installed)", Style::default().fg(MUTED()))
+                Span::styled("  (not installed)", Style::default().fg(muted()))
             } else {
                 Span::raw("")
             },
@@ -90,55 +95,84 @@ fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                 selected_flat = Some(flat);
             }
 
-            let marker = if is_selected { "▸" } else { "├" };
             let last = fi == tool.fields.len() - 1;
-            let connector = if last && !is_selected { "└" } else { marker };
+            let connector = if last { "└" } else { "├" };
+            let rule = "─";
 
             let val_color = if field.value.starts_with('✓')
                 || (field.key.contains("API Key") && field.value != "—")
             {
-                GREEN()
+                green()
             } else if field.value.starts_with('✗') {
-                RED()
+                red()
             } else if field.value == "—" {
-                MUTED()
+                muted()
             } else {
-                YELLOW()
+                yellow()
             };
 
             let (display_key, extra_indent) = if let Some(pos) = field.key.find(" ▸ ") {
-                (format!("▸ {}", &field.key[pos + " ▸ ".len()..]), true)
+                (format!("↳ {}", &field.key[pos + " ▸ ".len()..]), true)
             } else {
                 (field.key.clone(), false)
             };
 
             let indent_str = if extra_indent { "    │  " } else { "    " };
             let key_width = if extra_indent { 21 } else { 24 };
+            let tree_color = if is_selected { purple() } else { muted() };
+            let row_color = if is_selected { purple() } else { text_fg() };
+            let key_marker = if is_selected { "› " } else { "  " };
 
             let val_prefix = if field.value.starts_with('✓') || field.value.starts_with('✗') {
                 ""
             } else if field.editable {
-                "› "
+                "→ "
             } else {
                 "· "
             };
 
+            let key_style = Style::default().fg(row_color).add_modifier(if is_selected {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            });
+            let value_style = Style::default()
+                .fg(if is_selected { purple() } else { val_color })
+                .add_modifier(if is_selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                });
+
             let line = Line::from(vec![
-                Span::styled(indent_str, Style::default().fg(MUTED())),
+                Span::styled(indent_str, Style::default().fg(tree_color)),
                 Span::styled(
                     connector,
-                    Style::default().fg(if is_selected { PURPLE() } else { MUTED() }),
+                    Style::default()
+                        .fg(tree_color)
+                        .add_modifier(if is_selected {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
                 ),
+                Span::styled(format!("{rule} "), Style::default().fg(tree_color)),
                 Span::styled(
-                    "─ ",
-                    Style::default().fg(if is_selected { PURPLE() } else { MUTED() }),
+                    key_marker,
+                    Style::default()
+                        .fg(if is_selected { purple() } else { muted() })
+                        .add_modifier(if is_selected {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
                 ),
                 Span::styled(
                     format!("{:<width$}", display_key, width = key_width),
-                    Style::default().fg(TEXT()),
+                    key_style,
                 ),
-                Span::styled(val_prefix, Style::default().fg(val_color)),
-                Span::styled(&field.value, Style::default().fg(val_color)),
+                Span::styled(val_prefix, value_style),
+                Span::styled(&field.value, value_style),
             ]);
 
             items.push(ListItem::new(line));
@@ -152,7 +186,7 @@ fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let mut state = ListState::default();
     state.select(selected_flat);
 
-    let list = List::new(items).highlight_style(Style::default().bg(PANEL()));
+    let list = List::new(items).highlight_style(Style::default());
 
     frame.render_stateful_widget(list, area, &mut state);
 }
@@ -160,28 +194,46 @@ fn render_tools(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 fn render_status_bar(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let status = if let Some(msg) = &app.status_msg {
         Line::from(vec![
-            Span::styled(" ℹ ", Style::default().fg(GREEN())),
-            Span::styled(msg.as_str(), Style::default().fg(TEXT())),
+            Span::styled(" ℹ ", Style::default().fg(green())),
+            Span::styled(msg.as_str(), Style::default().fg(text_fg())),
         ])
     } else {
         Line::from(vec![
-            Span::styled(" ↑↓ ", Style::default().fg(PURPLE())),
-            Span::styled("navigate", Style::default().fg(MUTED())),
-            Span::styled("  ", Style::default().fg(MUTED())),
-            Span::styled(" ENTER ", Style::default().fg(PURPLE())),
-            Span::styled("edit", Style::default().fg(MUTED())),
-            Span::styled("  ", Style::default().fg(MUTED())),
-            Span::styled(" ESC ", Style::default().fg(PURPLE())),
-            Span::styled("cancel", Style::default().fg(MUTED())),
-            Span::styled("  ", Style::default().fg(MUTED())),
-            Span::styled(" O ", Style::default().fg(PURPLE())),
-            Span::styled("open file", Style::default().fg(MUTED())),
-            Span::styled("  ", Style::default().fg(MUTED())),
-            Span::styled(" R ", Style::default().fg(PURPLE())),
-            Span::styled("refresh", Style::default().fg(MUTED())),
-            Span::styled("  ", Style::default().fg(MUTED())),
-            Span::styled(" Q ", Style::default().fg(PURPLE())),
-            Span::styled("quit", Style::default().fg(MUTED())),
+            Span::styled(
+                " ↑↓ ",
+                Style::default().fg(purple()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Navigate", Style::default().fg(muted())),
+            Span::styled(" | ", Style::default().fg(muted())),
+            Span::styled(
+                " Enter ",
+                Style::default().fg(purple()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Edit", Style::default().fg(muted())),
+            Span::styled(" | ", Style::default().fg(muted())),
+            Span::styled(
+                " Esc ",
+                Style::default().fg(purple()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Cancel", Style::default().fg(muted())),
+            Span::styled(" | ", Style::default().fg(muted())),
+            Span::styled(
+                " O ",
+                Style::default().fg(purple()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Open", Style::default().fg(muted())),
+            Span::styled(" | ", Style::default().fg(muted())),
+            Span::styled(
+                " R ",
+                Style::default().fg(purple()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Refresh", Style::default().fg(muted())),
+            Span::styled(" | ", Style::default().fg(muted())),
+            Span::styled(
+                " Q ",
+                Style::default().fg(purple()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Quit", Style::default().fg(muted())),
         ])
     };
 
@@ -208,17 +260,17 @@ pub(super) fn render_editor(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let block = Block::default()
         .title(Line::from(vec![
-            Span::styled(" Edit: ", Style::default().fg(PURPLE())),
-            Span::styled(&field.key, Style::default().fg(TEXT())),
+            Span::styled(" Edit: ", Style::default().fg(purple())),
+            Span::styled(&field.key, Style::default().fg(text_fg())),
             Span::styled("  ", Style::default()),
-            Span::styled("Enter", Style::default().fg(PURPLE())),
-            Span::styled(": Save  ", Style::default().fg(MUTED())),
-            Span::styled("Esc", Style::default().fg(PURPLE())),
-            Span::styled(": Cancel ", Style::default().fg(MUTED())),
+            Span::styled("Enter", Style::default().fg(purple())),
+            Span::styled(": Save  ", Style::default().fg(muted())),
+            Span::styled("Esc", Style::default().fg(purple())),
+            Span::styled(": Cancel ", Style::default().fg(muted())),
         ]))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(PURPLE()))
-        .style(Style::default().bg(BG()));
+        .border_style(Style::default().fg(purple()))
+        .style(Style::default().bg(panel()));
 
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
@@ -226,7 +278,7 @@ pub(super) fn render_editor(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let content_area = inner.inner(Margin::new(1, 0));
 
     let line = if app.edit_buf.is_empty() {
-        Line::from(Span::styled(" ", Style::default().bg(PURPLE())))
+        Line::from(Span::styled(" ", Style::default().bg(purple())))
     } else {
         let cursor_pos = app.edit_cursor;
         let before = &app.edit_buf[..cursor_pos];
@@ -234,8 +286,8 @@ pub(super) fn render_editor(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
         if cursor_pos >= app.edit_buf.len() {
             Line::from(vec![
-                Span::styled(before, Style::default().fg(TEXT())),
-                Span::styled(" ", Style::default().bg(PURPLE())),
+                Span::styled(before, Style::default().fg(text_fg())),
+                Span::styled(" ", Style::default().bg(purple())),
             ])
         } else {
             let mut chars = after.chars();
@@ -243,12 +295,12 @@ pub(super) fn render_editor(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             let remaining = chars.as_str();
 
             Line::from(vec![
-                Span::styled(before, Style::default().fg(TEXT())),
+                Span::styled(before, Style::default().fg(text_fg())),
                 Span::styled(
                     current_char.to_string(),
-                    Style::default().bg(PURPLE()).fg(BG()),
+                    Style::default().bg(purple()).fg(bg()),
                 ),
-                Span::styled(remaining, Style::default().fg(TEXT())),
+                Span::styled(remaining, Style::default().fg(text_fg())),
             ])
         }
     };
@@ -289,13 +341,13 @@ fn render_selector(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let block = Block::default()
         .title(Line::from(vec![
-            Span::styled(" Select: ", Style::default().fg(PURPLE())),
-            Span::styled(&field.key, Style::default().fg(TEXT())),
+            Span::styled(" Select: ", Style::default().fg(purple())),
+            Span::styled(&field.key, Style::default().fg(text_fg())),
             Span::raw(" "),
         ]))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(PURPLE()))
-        .style(Style::default().bg(BG()));
+        .border_style(Style::default().fg(purple()))
+        .style(Style::default().bg(panel()));
 
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
@@ -306,14 +358,17 @@ fn render_selector(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(i, opt)| {
             let is_sel = i == app.select_index;
-            let marker = if is_sel { "▸ " } else { "  " };
+            let marker = if is_sel { "➤ " } else { "  " };
             let style = if is_sel {
-                Style::default().fg(PURPLE()).add_modifier(Modifier::BOLD)
+                Style::default().fg(purple()).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(TEXT())
+                Style::default().fg(text_fg())
             };
             ListItem::new(Line::from(vec![
-                Span::styled(marker, Style::default().fg(PURPLE())),
+                Span::styled(
+                    marker,
+                    Style::default().fg(purple()).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(opt.as_str(), style),
             ]))
         })
@@ -322,6 +377,6 @@ fn render_selector(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let mut state = ListState::default();
     state.select(Some(app.select_index));
 
-    let list = List::new(items).highlight_style(Style::default().bg(PANEL()));
+    let list = List::new(items).highlight_style(Style::default());
     frame.render_stateful_widget(list, inner, &mut state);
 }

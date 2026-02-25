@@ -207,35 +207,39 @@ impl ColorSchemeRegistry {
 
     fn load_scheme(&self, name: &str) -> Option<Palette> {
         for (scheme_name, data) in scheme_data::SCHEMES.iter() {
-            // Check if this is the scheme we're looking for (by name or alias)
-            let should_load = if *scheme_name == name {
-                true
-            } else {
-                // Quick check: parse to see if name matches an alias
-                if let Ok(scheme) = ColorSchemeFile::from_toml_str(data) {
-                    scheme.metadata.aliases.iter().any(|alias| alias == name)
-                } else {
-                    false
+            let is_primary = *scheme_name == name;
+            // Skip TOML parsing entirely when neither the primary name nor any alias
+            // can possibly match. For primary-name lookups this is a no-op; for alias
+            // lookups we parse once and reuse the same result for both the alias check
+            // and the data extraction, so the TOML is never parsed twice.
+            if !is_primary {
+                let Ok(scheme) = ColorSchemeFile::from_toml_str(data) else {
+                    continue;
+                };
+                if !scheme.metadata.aliases.iter().any(|a| a == name) {
+                    continue;
                 }
-            };
-
-            if should_load {
-                if let Ok(scheme) = ColorSchemeFile::from_toml_str(data) {
-                    let palette = scheme.colors.clone();
-                    let mut loaded = self.loaded.write();
-
-                    // Cache the main scheme name
-                    loaded.insert(scheme_name.to_string(), palette.clone());
-
-                    // Also cache all aliases to avoid re-parsing
-                    for alias in &scheme.metadata.aliases {
-                        loaded.insert(alias.clone(), palette.clone());
-                    }
-
-                    return Some(palette);
+                // Alias matched: use the already-parsed scheme directly.
+                let palette = scheme.colors.clone();
+                let mut loaded = self.loaded.write();
+                loaded.insert(scheme_name.to_string(), palette.clone());
+                for alias in &scheme.metadata.aliases {
+                    loaded.insert(alias.clone(), palette.clone());
                 }
-                return None;
+                return Some(palette);
             }
+
+            // Primary name matched: parse once.
+            if let Ok(scheme) = ColorSchemeFile::from_toml_str(data) {
+                let palette = scheme.colors.clone();
+                let mut loaded = self.loaded.write();
+                loaded.insert(scheme_name.to_string(), palette.clone());
+                for alias in &scheme.metadata.aliases {
+                    loaded.insert(alias.clone(), palette.clone());
+                }
+                return Some(palette);
+            }
+            return None;
         }
 
         None
@@ -444,6 +448,14 @@ pub fn common_init(
     Ok(())
 }
 
+pub fn defer_watchers_until_enabled() {
+    CONFIG.defer_watchers_until_enabled();
+}
+
+pub fn enable_deferred_watchers() {
+    CONFIG.enable_deferred_watchers();
+}
+
 pub fn assign_error_callback(cb: ErrorCallback) {
     let mut factory = SHOW_ERROR.lock().unwrap();
     factory.replace(cb);
@@ -467,6 +479,23 @@ pub fn create_user_owned_dirs(p: &Path) -> anyhow::Result<()> {
 
     builder.create(p)?;
     Ok(())
+}
+
+pub fn is_executable_file(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return std::fs::metadata(path)
+            .map(|meta| meta.is_file() && (meta.permissions().mode() & 0o111 != 0))
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::metadata(path)
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
+    }
 }
 
 pub fn user_config_path() -> PathBuf {
@@ -862,6 +891,8 @@ struct ConfigInner {
     warnings: Vec<String>,
     generation: usize,
     watcher: Option<notify::RecommendedWatcher>,
+    defer_watchers_until_enabled: bool,
+    pending_watch_paths: Vec<PathBuf>,
     subscribers: HashMap<usize, Box<dyn Fn() -> bool + Send>>,
 }
 
@@ -873,6 +904,8 @@ impl ConfigInner {
             warnings: vec![],
             generation: 0,
             watcher: None,
+            defer_watchers_until_enabled: false,
+            pending_watch_paths: vec![],
             subscribers: HashMap::new(),
         }
     }
@@ -1014,10 +1047,36 @@ impl ConfigInner {
         }
 
         self.notify();
+        self.pending_watch_paths.clear();
         if self.config.automatically_reload_config {
-            for path in watch_paths {
-                self.watch_path(path);
+            if self.defer_watchers_until_enabled {
+                self.pending_watch_paths = watch_paths;
+            } else {
+                for path in watch_paths {
+                    self.watch_path(path);
+                }
             }
+        }
+    }
+
+    fn defer_watchers_until_enabled(&mut self) {
+        self.defer_watchers_until_enabled = true;
+    }
+
+    fn enable_deferred_watchers(&mut self) {
+        if !self.defer_watchers_until_enabled {
+            return;
+        }
+        self.defer_watchers_until_enabled = false;
+
+        if !self.config.automatically_reload_config {
+            self.pending_watch_paths.clear();
+            return;
+        }
+
+        let pending = std::mem::take(&mut self.pending_watch_paths);
+        for path in pending {
+            self.watch_path(path);
         }
     }
 
@@ -1098,6 +1157,16 @@ impl Configuration {
     pub fn use_defaults(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.use_defaults();
+    }
+
+    pub fn defer_watchers_until_enabled(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.defer_watchers_until_enabled();
+    }
+
+    pub fn enable_deferred_watchers(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.enable_deferred_watchers();
     }
 
     fn use_this_config(&self, cfg: Config) {

@@ -14,6 +14,7 @@ mod ai_config;
 mod assistant_config;
 mod cli;
 mod config_cmd;
+mod doctor;
 mod init;
 mod reset;
 mod update;
@@ -111,6 +112,12 @@ enum SubCommand {
 
     #[command(name = "init", about = "Initialize Kaku shell integration")]
     Init(init::InitCommand),
+
+    #[command(
+        name = "doctor",
+        about = "Check Kaku shell integration, environment, and runtime health"
+    )]
+    Doctor(doctor::DoctorCommand),
 
     #[command(
         name = "update",
@@ -270,9 +277,14 @@ fn init_config(opts: &Opt) -> anyhow::Result<ConfigHandle> {
 }
 
 fn run() -> anyhow::Result<()> {
-    env_bootstrap::bootstrap();
-
     let saver = UmaskSaver::new();
+
+    // Clap renders --help/--version during parse, so version info must be
+    // assigned before Opt::parse() even when we skip full env bootstrap.
+    config::assign_version_info(
+        wezterm_version::wezterm_version(),
+        wezterm_version::wezterm_target_triple(),
+    );
 
     let opts = Opt::parse();
 
@@ -289,9 +301,15 @@ fn run() -> anyhow::Result<()> {
     };
 
     match cmd {
-        SubCommand::Start(_) | SubCommand::BlockingStart(_) => delegate_to_gui(saver),
+        SubCommand::Start(_) | SubCommand::BlockingStart(_) => {
+            env_bootstrap::bootstrap();
+            delegate_to_gui(saver)
+        }
+        SubCommand::Cli(cli) => {
+            env_bootstrap::bootstrap();
+            cli::run_cli(&opts, cli)
+        }
         SubCommand::SetCwd(cmd) => cmd.run(),
-        SubCommand::Cli(cli) => cli::run_cli(&opts, cli),
         SubCommand::ShellCompletion { shell } => {
             use clap::CommandFactory;
             let mut cmd = Opt::command();
@@ -302,6 +320,7 @@ fn run() -> anyhow::Result<()> {
         SubCommand::Update(cmd) => cmd.run(),
         SubCommand::Config(cmd) => cmd.run(),
         SubCommand::Init(cmd) => cmd.run(),
+        SubCommand::Doctor(cmd) => cmd.run(),
         SubCommand::Reset(cmd) => cmd.run(),
         SubCommand::Ai(cmd) => cmd.run(),
     }
@@ -320,10 +339,9 @@ fn select_main_menu_command() -> anyhow::Result<Option<SubCommand>> {
     use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
     use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
+    const GREEN: &str = "\x1b[0;32m";
     const PURPLE_BOLD: &str = "\x1b[1;35m";
-    const BLUE: &str = "\x1b[34m";
-    const GRAY: &str = "\x1b[90m";
-    const PURPLE: &str = "\x1b[35m";
+    const GRAY: &str = "\x1b[0;90m";
     const RESET: &str = "\x1b[0m";
 
     #[derive(Clone, Copy)]
@@ -331,11 +349,12 @@ fn select_main_menu_command() -> anyhow::Result<Option<SubCommand>> {
         Ai,
         Config,
         Init,
+        Doctor,
         Update,
         Reset,
     }
 
-    const MENU_ITEMS: [(&str, &str, MenuChoice); 5] = [
+    const MENU_ITEMS: [(&str, &str, MenuChoice); 6] = [
         (
             "ai",
             "Manage Kaku Assistant and AI tool settings",
@@ -343,6 +362,11 @@ fn select_main_menu_command() -> anyhow::Result<Option<SubCommand>> {
         ),
         ("config", "Open ~/.config/kaku/kaku.lua", MenuChoice::Config),
         ("init", "Initialize shell integration", MenuChoice::Init),
+        (
+            "doctor",
+            "Run diagnostics for shell and runtime health",
+            MenuChoice::Doctor,
+        ),
         (
             "update",
             "Check and install latest version",
@@ -357,10 +381,9 @@ fn select_main_menu_command() -> anyhow::Result<Option<SubCommand>> {
 
     fn render_menu(
         selected: usize,
+        green: &str,
         purple_bold: &str,
-        blue: &str,
         gray: &str,
-        purple: &str,
         reset: &str,
     ) -> anyhow::Result<()> {
         use crossterm::cursor::MoveTo;
@@ -372,37 +395,32 @@ fn select_main_menu_command() -> anyhow::Result<Option<SubCommand>> {
 
         let mut out = String::new();
         out.push_str("\r\n");
-        out.push_str(&format!("{purple_bold}  _  __      _          {reset}\r\n"));
-        out.push_str(&format!("{purple_bold} | |/ /     | |         {reset}\r\n"));
+        out.push_str(&format!("{green}  _  __      _          {reset}\r\n"));
+        out.push_str(&format!("{green} | |/ /     | |         {reset}\r\n"));
+        out.push_str(&format!("{green} | ' / __ _ | | __ _   _ {reset}\r\n"));
+        out.push_str(&format!("{green} |  < / _` || |/ /| | | |{reset}\r\n"));
         out.push_str(&format!(
-            "{purple_bold} | ' / __ _ | | __ _   _ {reset}\r\n"
+            "{green} | . \\ (_| ||   < | |_| |{reset}  {purple_bold}https://github.com/tw93/Kaku{reset}\r\n"
         ));
         out.push_str(&format!(
-            "{purple_bold} |  < / _` || |/ /| | | |{reset}\r\n"
-        ));
-        out.push_str(&format!(
-            "{purple_bold} | . \\ (_| ||   < | |_| |{reset}  {blue}https://github.com/tw93/Kaku{reset}\r\n"
-        ));
-        out.push_str(&format!(
-            "{purple_bold} |_|\\_\\__,_||_|\\_\\ \\__,_|{reset}  {gray}A fast, out-of-the-box terminal built for AI coding.{reset}\r\n"
+            "{green} |_|\\_\\__,_||_|\\_\\ \\__,_|{reset}  {green}A fast, out-of-the-box terminal built for AI coding.{reset}\r\n"
         ));
         out.push_str("\r\n");
         for (idx, (name, desc, _)) in MENU_ITEMS.iter().enumerate() {
             let is_selected = idx == selected;
-            let marker = if is_selected { "▸" } else { " " };
             let number = idx + 1;
-            let marker_color = if is_selected { purple } else { gray };
-            let name_color = if is_selected { purple_bold } else { reset };
-            let row_color = if is_selected { PURPLE_BOLD } else { RESET };
-            out.push_str(&format!(
-                " {row_color}{marker_color}{marker}{reset}{row_color} {number}. {name_color}{:<7}{reset}{row_color}     {desc}{reset}",
-                name,
-            ));
-            out.push_str("\r\n");
+            if is_selected {
+                out.push_str(&format!(
+                    "{purple_bold}➤ {number}. {:<7}     {desc}{reset}\r\n",
+                    name
+                ));
+            } else {
+                out.push_str(&format!("  {number}. {:<7}     {desc}\r\n", name));
+            }
         }
         out.push_str("\r\n");
         out.push_str(&format!(
-            "  {gray}Use ↑/↓ and Enter, or press 1-5. Press q or Esc to quit.{reset}\r\n"
+            "  {gray}↑↓  |  Enter  |  1-6  |  Q Quit  |  Esc Exit{reset}\r\n"
         ));
 
         stdout
@@ -416,6 +434,7 @@ fn select_main_menu_command() -> anyhow::Result<Option<SubCommand>> {
             MenuChoice::Ai => SubCommand::Ai(ai_config::AiConfigCommand::default()),
             MenuChoice::Config => SubCommand::Config(config_cmd::ConfigCommand::default()),
             MenuChoice::Init => SubCommand::Init(init::InitCommand::default()),
+            MenuChoice::Doctor => SubCommand::Doctor(doctor::DoctorCommand::default()),
             MenuChoice::Update => SubCommand::Update(update::UpdateCommand::default()),
             MenuChoice::Reset => SubCommand::Reset(reset::ResetCommand::default()),
         }
@@ -436,7 +455,7 @@ fn select_main_menu_command() -> anyhow::Result<Option<SubCommand>> {
     let _raw_guard = RawModeGuard;
 
     let mut selected = 0usize;
-    render_menu(selected, PURPLE_BOLD, BLUE, GRAY, PURPLE, RESET)?;
+    render_menu(selected, GREEN, PURPLE_BOLD, GRAY, RESET)?;
 
     loop {
         match event::read().context("read main menu input")? {
@@ -444,13 +463,13 @@ fn select_main_menu_command() -> anyhow::Result<Option<SubCommand>> {
                 KeyCode::Up | KeyCode::Char('k') => {
                     if selected > 0 {
                         selected -= 1;
-                        render_menu(selected, PURPLE_BOLD, BLUE, GRAY, PURPLE, RESET)?;
+                        render_menu(selected, GREEN, PURPLE_BOLD, GRAY, RESET)?;
                     }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     if selected + 1 < MENU_ITEMS.len() {
                         selected += 1;
-                        render_menu(selected, PURPLE_BOLD, BLUE, GRAY, PURPLE, RESET)?;
+                        render_menu(selected, GREEN, PURPLE_BOLD, GRAY, RESET)?;
                     }
                 }
                 KeyCode::Enter => return Ok(Some(to_subcommand(MENU_ITEMS[selected].2))),
@@ -467,9 +486,12 @@ fn select_main_menu_command() -> anyhow::Result<Option<SubCommand>> {
                     return Ok(Some(to_subcommand(MenuChoice::Init)));
                 }
                 KeyCode::Char('4') if can_use_menu_char_shortcut(key.modifiers) => {
-                    return Ok(Some(to_subcommand(MenuChoice::Update)));
+                    return Ok(Some(to_subcommand(MenuChoice::Doctor)));
                 }
                 KeyCode::Char('5') if can_use_menu_char_shortcut(key.modifiers) => {
+                    return Ok(Some(to_subcommand(MenuChoice::Update)));
+                }
+                KeyCode::Char('6') if can_use_menu_char_shortcut(key.modifiers) => {
                     return Ok(Some(to_subcommand(MenuChoice::Reset)));
                 }
                 KeyCode::Char('a') | KeyCode::Char('A')
@@ -486,6 +508,11 @@ fn select_main_menu_command() -> anyhow::Result<Option<SubCommand>> {
                     if can_use_menu_char_shortcut(key.modifiers) =>
                 {
                     return Ok(Some(to_subcommand(MenuChoice::Init)));
+                }
+                KeyCode::Char('d') | KeyCode::Char('D')
+                    if can_use_menu_char_shortcut(key.modifiers) =>
+                {
+                    return Ok(Some(to_subcommand(MenuChoice::Doctor)));
                 }
                 KeyCode::Char('u') | KeyCode::Char('U')
                     if can_use_menu_char_shortcut(key.modifiers) =>

@@ -38,11 +38,19 @@ esac
 
 # Remote machines typically don't have the "kaku" terminfo entry, so when
 # SSHing from a Kaku local shell (TERM=kaku), zsh plugins on the remote side
-# (autosuggestions, syntax-highlighting) fall back to broken rendering paths,
-# causing garbled display (e.g. "ls -lh" appearing as "lss s -lh").
+# (autosuggestions, syntax-highlighting) can fall back to broken rendering
+# paths, causing garbled display (e.g. "ls -lh" appearing as "lss s -lh").
 # Override TERM for ssh sessions the same way Kaku's built-in SSH domain does.
-if [[ "${TERM:-}" == "kaku" ]]; then
-  ssh() { TERM=xterm-256color command ssh "$@"; }
+# Set KAKU_SSH_SKIP_TERM_FIX=1 to disable. If the user already defined ssh(),
+# keep their function untouched.
+if ! typeset -f ssh >/dev/null 2>&1; then
+  ssh() {
+    if [[ -z "${KAKU_SSH_SKIP_TERM_FIX-}" && "${TERM:-}" == "kaku" ]]; then
+      TERM=xterm-256color command ssh "$@"
+    else
+      command ssh "$@"
+    fi
+  }
 fi
 
 # This function wraps bash-preexec.sh so that it can be included verbatim

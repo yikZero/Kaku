@@ -43,6 +43,7 @@ mod scrollbar;
 mod selection;
 mod shapecache;
 mod spawn;
+mod startup_trace;
 mod stats;
 mod tabbar;
 mod termwindow;
@@ -634,13 +635,15 @@ fn run_terminal_gui(opts: StartCommand, default_domain_name: Option<String>) -> 
     // FontConfiguration::new() in new_window() hits warm caches instead of
     // blocking the async startup path.
     let font_dirs = config.font_dirs.clone();
-    std::thread::Builder::new()
+    if let Err(err) = std::thread::Builder::new()
         .name("font-prewarm".into())
         .spawn(move || {
             let _ = wezterm_font::db::FontDatabase::with_built_in();
             wezterm_font::db::FontDatabase::prewarm_font_dirs(&font_dirs);
         })
-        .ok();
+    {
+        log::warn!("Failed to start font prewarm thread: {}", err);
+    }
 
     let need_builder = !opts.prog.is_empty() || opts.cwd.is_some();
 
@@ -663,11 +666,13 @@ fn run_terminal_gui(opts: StartCommand, default_domain_name: Option<String>) -> 
         None
     };
 
+    startup_trace::mark("build_initial_mux() start");
     let mux = build_initial_mux(
         &config,
         default_domain_name.as_deref(),
         opts.workspace.as_deref(),
     )?;
+    startup_trace::mark("build_initial_mux() done");
 
     // First, let's see if we can ask an already running Kaku instance to do this.
     // We must do this before we start the gui frontend as the scheduler
@@ -691,7 +696,9 @@ fn run_terminal_gui(opts: StartCommand, default_domain_name: Option<String>) -> 
         return Ok(());
     }
 
+    startup_trace::mark("GuiFrontEnd::try_new() start");
     let gui = crate::frontend::try_new()?;
+    startup_trace::mark("GuiFrontEnd::try_new() done");
     let activity = Activity::new();
 
     promise::spawn::spawn(async move {
@@ -706,6 +713,7 @@ fn run_terminal_gui(opts: StartCommand, default_domain_name: Option<String>) -> 
     let _ = ::window::drain_spawn_queue_burst(8);
 
     maybe_show_configuration_error_window();
+    startup_trace::mark("gui.run_forever() entering event loop");
     gui.run_forever()
 }
 
@@ -736,7 +744,7 @@ fn notify_on_panic() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if let Some(s) = info.payload().downcast_ref::<&str>() {
-            fatal_toast_notification("Wezterm panic", s);
+            fatal_toast_notification("Kaku panic", s);
         }
         default_hook(info);
     }));
@@ -744,7 +752,7 @@ fn notify_on_panic() {
 
 fn terminate_with_error_message(err: &str) -> ! {
     log::error!("{}; terminating", err);
-    fatal_toast_notification("Wezterm Error", &err);
+    fatal_toast_notification("Kaku Error", &err);
     std::process::exit(1);
 }
 
@@ -761,6 +769,9 @@ fn terminate_with_error(err: anyhow::Error) -> ! {
 }
 
 fn main() {
+    startup_trace::init();
+    startup_trace::mark("main() entry");
+
     #[cfg(feature = "dhat-heap")]
     let _profiler = dhat::Profiler::new_heap();
 
@@ -822,7 +833,9 @@ fn run() -> anyhow::Result<()> {
         }
     };
 
+    startup_trace::mark("env_bootstrap::bootstrap() start");
     env_bootstrap::bootstrap();
+    startup_trace::mark("env_bootstrap::bootstrap() done");
     // window_funcs is not set up by env_bootstrap as window_funcs is
     // GUI environment specific and env_bootstrap is used to setup the
     // headless mux server.
@@ -832,11 +845,17 @@ fn run() -> anyhow::Result<()> {
 
     let _saver = umask::UmaskSaver::new();
 
+    // Defer config file watcher setup until the first window is visible.
+    // This preserves config loading behavior while moving notify watcher
+    // initialization off the first-paint critical path.
+    config::defer_watchers_until_enabled();
+    startup_trace::mark("common_init() start (config + lua load)");
     config::common_init(
         opts.config_file.as_ref(),
         &opts.config_override,
         opts.skip_config,
     )?;
+    startup_trace::mark("common_init() done");
     stats::Stats::init()?;
     let config = config::configuration();
     if let Some(value) = &config.default_ssh_auth_sock {

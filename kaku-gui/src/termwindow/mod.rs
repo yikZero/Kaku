@@ -8,8 +8,8 @@ use crate::inputmap::InputMap;
 use crate::overlay::confirm_close_window;
 use crate::overlay::{
     confirm_close_pane, confirm_close_tab, confirm_quit_program, launcher, start_overlay,
-    start_overlay_pane, CopyModeParams, CopyOverlay, LauncherArgs, LauncherFlags,
-    QuickSelectOverlay,
+    start_overlay_pane, show_debug_overlay, CopyModeParams, CopyOverlay, LauncherArgs,
+    LauncherFlags, QuickSelectOverlay,
 };
 use crate::resize_increment_calculator::ResizeIncrementCalculator;
 use crate::scripting::guiwin::GuiWin;
@@ -163,8 +163,31 @@ fn render_metrics_cache_file() -> PathBuf {
 }
 
 fn load_render_metrics_from_disk(key: RenderMetricsCacheKey) -> Option<RenderMetrics> {
-    let data = std::fs::read(render_metrics_cache_file()).ok()?;
-    let entry: RenderMetricsDiskEntry = serde_json::from_slice(&data).ok()?;
+    let file_name = render_metrics_cache_file();
+    let data = match std::fs::read(&file_name) {
+        Ok(data) => data,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                log::debug!(
+                    "Failed to read render metrics cache {}: {}",
+                    file_name.display(),
+                    err
+                );
+            }
+            return None;
+        }
+    };
+    let entry: RenderMetricsDiskEntry = match serde_json::from_slice(&data) {
+        Ok(entry) => entry,
+        Err(err) => {
+            log::debug!(
+                "Failed to parse render metrics cache {}: {}",
+                file_name.display(),
+                err
+            );
+            return None;
+        }
+    };
     if entry.key != key {
         return None;
     }
@@ -190,7 +213,13 @@ fn load_render_metrics_from_disk(key: RenderMetricsCacheKey) -> Option<RenderMet
 fn persist_render_metrics_to_disk(key: RenderMetricsCacheKey, metrics: RenderMetrics) {
     let file_name = render_metrics_cache_file();
     if let Some(parent) = file_name.parent() {
-        config::create_user_owned_dirs(parent).ok();
+        if let Err(err) = config::create_user_owned_dirs(parent) {
+            log::debug!(
+                "Failed to create render metrics cache directory {}: {:#}",
+                parent.display(),
+                err
+            );
+        }
     }
 
     let entry = RenderMetricsDiskEntry {
@@ -204,8 +233,19 @@ fn persist_render_metrics_to_disk(key: RenderMetricsCacheKey, metrics: RenderMet
         cell_height: metrics.cell_size.height,
     };
 
-    if let Ok(data) = serde_json::to_vec(&entry) {
-        std::fs::write(file_name, data).ok();
+    match serde_json::to_vec(&entry) {
+        Ok(data) => {
+            if let Err(err) = std::fs::write(&file_name, data) {
+                log::debug!(
+                    "Failed to write render metrics cache {}: {}",
+                    file_name.display(),
+                    err
+                );
+            }
+        }
+        Err(err) => {
+            log::debug!("Failed to serialize render metrics cache entry: {}", err);
+        }
     }
 }
 
@@ -1050,6 +1090,17 @@ impl TermWindow {
         .await?;
         tw.borrow_mut().window.replace(window.clone());
 
+        // Show the window as early as possible so the user sees it while
+        // GPU initialization runs in the background.
+        {
+            let mut myself = tw.borrow_mut();
+            myself.load_os_parameters();
+        }
+        crate::startup_trace::mark("  window.show() start");
+        window.show();
+        crate::startup_trace::mark("  window.show() done");
+
+        // These run after show — they don't affect window visibility.
         Self::apply_icon(&window)?;
 
         let config_subscription = config::subscribe_to_config_reload({
@@ -1061,15 +1112,9 @@ impl TermWindow {
                 true
             }
         });
+        config::enable_deferred_watchers();
 
-        // Show the window early, before GPU initialization, so the user sees
-        // a window with the configured background color while GPU adapter
-        // enumeration, device creation and shader compilation run.
-        {
-            let mut myself = tw.borrow_mut();
-            myself.load_os_parameters();
-        }
-        window.show();
+        crate::startup_trace::mark("  GPU init start");
         let (gl, webgpu) = match config.front_end {
             FrontEndSelection::WebGpu => match WebGpuState::new(&window, dimensions, &config).await
             {
@@ -1087,6 +1132,7 @@ impl TermWindow {
             },
             _ => (Some(window.enable_opengl().await?), None),
         };
+        crate::startup_trace::mark("  GPU init done");
 
         {
             let mut myself = tw.borrow_mut();
@@ -1638,15 +1684,20 @@ impl TermWindow {
         self.tab_state.borrow_mut().clear();
     }
 
-    fn apply_icon(window: &Window) -> anyhow::Result<()> {
-        let image = image::load_from_memory(ICON_DATA)?.into_rgba8();
-        let (width, height) = image.dimensions();
-        window.set_icon(Image::with_rgba32(
-            width as usize,
-            height as usize,
-            width as usize * 4,
-            image.as_raw(),
-        ));
+    fn apply_icon(_window: &Window) -> anyhow::Result<()> {
+        // On macOS the app bundle provides the icon via Info.plist;
+        // set_icon() is a no-op there, so skip the PNG decode entirely.
+        #[cfg(not(target_os = "macos"))]
+        {
+            let image = image::load_from_memory(ICON_DATA)?.into_rgba8();
+            let (width, height) = image.dimensions();
+            _window.set_icon(Image::with_rgba32(
+                width as usize,
+                height as usize,
+                width as usize * 4,
+                image.as_raw(),
+            ));
+        }
         Ok(())
     }
 
@@ -2648,7 +2699,7 @@ impl TermWindow {
         let connection_info = self.connection_name.clone();
 
         let (overlay, future) = start_overlay(self, &tab, move |_tab_id, term| {
-            crate::overlay::show_debug_overlay(term, gui_win, opengl_info, connection_info)
+            show_debug_overlay(term, gui_win, opengl_info, connection_info)
         });
         self.assign_overlay(tab.tab_id(), overlay);
         promise::spawn::spawn(future).detach();
@@ -2677,9 +2728,7 @@ impl TermWindow {
             title: Some(title),
             flags: LauncherFlags::LAUNCH_MENU_ITEMS
                 | LauncherFlags::WORKSPACES
-                | LauncherFlags::DOMAINS
-                | LauncherFlags::KEY_ASSIGNMENTS
-                | LauncherFlags::COMMANDS,
+                | LauncherFlags::DOMAINS,
             help_text: None,
             fuzzy_help_text: None,
             alphabet: None,

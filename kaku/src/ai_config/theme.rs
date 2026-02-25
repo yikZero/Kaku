@@ -14,9 +14,22 @@ pub(super) struct Theme {
 
 pub(super) fn parse_hex(hex: &str) -> Color {
     let hex = hex.trim_start_matches('#');
-    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+    if hex.len() < 6 {
+        return Color::Rgb(0, 0, 0);
+    }
+
+    let r = hex
+        .get(0..2)
+        .and_then(|s| u8::from_str_radix(s, 16).ok())
+        .unwrap_or(0);
+    let g = hex
+        .get(2..4)
+        .and_then(|s| u8::from_str_radix(s, 16).ok())
+        .unwrap_or(0);
+    let b = hex
+        .get(4..6)
+        .and_then(|s| u8::from_str_radix(s, 16).ok())
+        .unwrap_or(0);
     Color::Rgb(r, g, b)
 }
 
@@ -32,41 +45,33 @@ pub(super) static THEME: LazyLock<Theme> = LazyLock::new(|| {
         accent: hex("accent", "#ffca85"),
         error: hex("error", "#ff6767"),
         text: hex("text", "#edecee"),
-        muted: hex("muted", "#6b6b6b"),
+        muted: hex("muted", "#6d6d6d"),
         bg: hex("bg", "#15141b"),
         panel: hex("element", "#1f1d28"),
     }
 });
 
-#[allow(non_snake_case)]
-pub(super) fn PURPLE() -> Color {
+pub(super) fn purple() -> Color {
     THEME.primary
 }
-#[allow(non_snake_case)]
-pub(super) fn GREEN() -> Color {
+pub(super) fn green() -> Color {
     THEME.secondary
 }
-#[allow(non_snake_case)]
-pub(super) fn YELLOW() -> Color {
+pub(super) fn yellow() -> Color {
     THEME.accent
 }
-#[allow(non_snake_case)]
-pub(super) fn RED() -> Color {
+pub(super) fn red() -> Color {
     THEME.error
 }
-#[allow(non_snake_case)]
-pub(super) fn TEXT() -> Color {
+pub(super) fn text_fg() -> Color {
     THEME.text
 }
-#[allow(non_snake_case)]
-pub(super) fn MUTED() -> Color {
+pub(super) fn muted() -> Color {
     THEME.muted
 }
-#[allow(non_snake_case)]
-pub(super) fn BG() -> Color {
+pub(super) fn bg() -> Color {
     THEME.bg
 }
-#[allow(non_snake_case)]
-pub(super) fn PANEL() -> Color {
+pub(super) fn panel() -> Color {
     THEME.panel
 }

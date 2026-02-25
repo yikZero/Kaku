@@ -7,7 +7,7 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -17,6 +17,8 @@ jobs:
   fmt:
     name: Format
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -71,6 +73,11 @@ jobs:
         run: |
           cargo nextest run -E 'not test(shapecache::test::ligatures_jetbrains)'
           cargo nextest run -p wezterm-escape-parser
+
+      - name: Shell integration smoke tests
+        run: |
+          bash assets/shell-integration/tests/normalize_kaku_source_line_smoke.sh
+          bash assets/shell-integration/tests/cleanup_legacy_inline_block_smoke.sh
 
   check:
     name: Cargo Check
