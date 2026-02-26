@@ -3254,6 +3254,8 @@ impl WindowView {
 
     extern "C" fn scroll_wheel(this: &mut Object, _sel: Sel, nsevent: id) {
         let precise = unsafe { nsevent.hasPreciseScrollingDeltas() } == YES;
+        let raw_vert_delta = unsafe { nsevent.scrollingDeltaY() };
+        let raw_horz_delta = unsafe { nsevent.scrollingDeltaX() };
         let scale = if precise {
             // Devices with precise deltas report number of pixels scrolled.
             // At this layer we don't know how many pixels comprise a cell
@@ -3267,11 +3269,33 @@ impl WindowView {
             // so we want to report those lines here wholesale.
             1.0
         };
-        let mut vert_delta = unsafe { nsevent.scrollingDeltaY() } / scale;
-        let mut horz_delta = unsafe { nsevent.scrollingDeltaX() } / scale;
-
+        let mut vert_delta = raw_vert_delta / scale;
+        let mut horz_delta = raw_horz_delta / scale;
+        let mut suppress_vert = false;
+        let mut suppress_horz = false;
+        if precise {
+            // Trackpads often emit tiny cross-axis jitter.
+            // When one axis is clearly dominant, suppress the other axis so
+            // terminal apps don't receive accidental left/right wheel events.
+            let raw_v = raw_vert_delta.abs();
+            let raw_h = raw_horz_delta.abs();
+            if raw_v > raw_h * 1.25 {
+                suppress_horz = true;
+            } else if raw_h > raw_v * 1.25 {
+                suppress_vert = true;
+            }
+        }
         if let Some(myself) = Self::get_this(this) {
             let mut inner = myself.inner.borrow_mut();
+
+            if suppress_horz {
+                inner.hscroll_remainder = 0.;
+                horz_delta = 0.0;
+            }
+            if suppress_vert {
+                inner.vscroll_remainder = 0.;
+                vert_delta = 0.0;
+            }
 
             let elapsed = inner.last_wheel.elapsed();
 
@@ -3293,11 +3317,13 @@ impl WindowView {
 
             inner.last_wheel = Instant::now();
 
-            // Reset remainder when changing scroll direction
-            if vert_delta.signum() != inner.vscroll_remainder.signum() {
+            // Reset remainder only when an explicit non-zero delta changes direction.
+            // Zero deltas are common on smooth trackpads and should not discard
+            // accumulated fractional scroll.
+            if vert_delta != 0.0 && vert_delta.signum() != inner.vscroll_remainder.signum() {
                 inner.vscroll_remainder = 0.;
             }
-            if horz_delta.signum() != inner.hscroll_remainder.signum() {
+            if horz_delta != 0.0 && horz_delta.signum() != inner.hscroll_remainder.signum() {
                 inner.hscroll_remainder = 0.;
             }
 

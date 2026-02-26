@@ -8,7 +8,7 @@ use ::window::{
 };
 use config::keyassignment::{KeyAssignment, MouseEventTrigger, SpawnTabDomain};
 use config::MouseEventAltScreen;
-use mux::pane::{Pane, WithPaneLines};
+use mux::pane::{CachePolicy, Pane, WithPaneLines};
 use mux::tab::SplitDirection;
 use mux::Mux;
 use mux_lua::MuxPane;
@@ -21,6 +21,7 @@ use termwiz::hyperlink::Hyperlink;
 use termwiz::surface::Line;
 use wezterm_dynamic::ToDynamic;
 use wezterm_term::input::{MouseButton, MouseEventKind as TMEK};
+use wezterm_term::{KeyCode, KeyModifiers};
 use wezterm_term::{ClickPosition, LastMouseClick, StableRowIndex};
 
 impl super::TermWindow {
@@ -1140,7 +1141,44 @@ impl super::TermWindow {
             }),
         };
 
-        if allow_action {
+        // Some less setups run without alt screen. In that mode, the default
+        // wheel binding scrolls terminal scrollback instead of less content.
+        // Detect less and map wheel to arrow keys directly.
+        let is_wheel_event = matches!(event.kind, WMEK::VertWheel(_) | WMEK::HorzWheel(_));
+        let foreground_process = if is_wheel_event {
+            pane.get_foreground_process_name(CachePolicy::AllowStale)
+        } else {
+            None
+        };
+        let foreground_bin = foreground_process
+            .as_deref()
+            .and_then(|name| name.rsplit('/').next());
+        let less_without_alt = is_wheel_event
+            && !pane.is_alt_screen_active()
+            && !pane.is_mouse_grabbed()
+            && foreground_bin == Some("less");
+        let bypass_wheel_assignment_in_alt = is_wheel_event
+            && pane.is_alt_screen_active()
+            && !pane.is_mouse_grabbed();
+        if less_without_alt {
+            let (key, amount) = match event.kind {
+                WMEK::VertWheel(amount) if amount > 0 => (KeyCode::UpArrow, amount as usize),
+                WMEK::VertWheel(amount) if amount < 0 => (KeyCode::DownArrow, (-amount) as usize),
+                WMEK::HorzWheel(amount) if amount > 0 => (KeyCode::LeftArrow, amount as usize),
+                WMEK::HorzWheel(amount) if amount < 0 => (KeyCode::RightArrow, (-amount) as usize),
+                _ => (KeyCode::DownArrow, 0),
+            };
+            for _ in 0..amount {
+                if let Err(err) = pane.key_down(key.clone(), KeyModifiers::default()) {
+                    log::debug!("forwarding wheel as key to less failed: {err:#}");
+                    break;
+                }
+            }
+            context.invalidate();
+            return;
+        }
+
+        if allow_action && !bypass_wheel_assignment_in_alt {
             if let Some(mut event_trigger_type) = event_trigger_type {
                 self.current_event = Some(event_trigger_type.to_dynamic());
                 let mut modifiers = event.modifiers;

@@ -111,31 +111,6 @@ impl InputMap {
                     },
                     ScrollByCurrentEventWheelDelta
                 ],
-                // Alt screen (no mouse reporting): wheel triggers Primary Screen Peek
-                [
-                    MouseEventTriggerMods {
-                        mods: Modifiers::NONE,
-                        mouse_reporting: false,
-                        alt_screen: MouseEventAltScreen::True,
-                    },
-                    MouseEventTrigger::Down {
-                        streak: 1,
-                        button: MouseButton::WheelUp(1),
-                    },
-                    ScrollByCurrentEventWheelDelta
-                ],
-                [
-                    MouseEventTriggerMods {
-                        mods: Modifiers::NONE,
-                        mouse_reporting: false,
-                        alt_screen: MouseEventAltScreen::True,
-                    },
-                    MouseEventTrigger::Down {
-                        streak: 1,
-                        button: MouseButton::WheelDown(1),
-                    },
-                    ScrollByCurrentEventWheelDelta
-                ],
                 [
                     MouseEventTriggerMods {
                         mods: Modifiers::NONE,
