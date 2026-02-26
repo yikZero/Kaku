@@ -151,24 +151,14 @@ pub fn open_kaku_config() {
                 );
             }
 
-            let home = std::env::var("HOME").context("resolve HOME for config path")?;
-            let config_path = format!("{home}/.config/kaku/kaku.lua");
-            let quoted_config_path =
-                shlex::try_quote(&config_path).context("quote config path for shell open")?;
-            let open_script = format!(
-                "if command -v code >/dev/null 2>&1; then code -g {0}; else /usr/bin/open {0}; fi",
-                quoted_config_path
-            );
-            let open_status = Command::new("/bin/sh")
-                .arg("-lc")
-                .arg(open_script)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .context("open kaku.lua in editor")?;
-            if !open_status.success() {
-                anyhow::bail!("failed to open {}", config_path);
+            let home = std::env::var_os("HOME").context("resolve HOME for config path")?;
+            let config_path = PathBuf::from(home)
+                .join(".config")
+                .join("kaku")
+                .join("kaku.lua");
+
+            if !try_open_with_vscode(&config_path)? && !try_open_with_default_app(&config_path)? {
+                open_with_textedit(&config_path)?;
             }
 
             Ok(())
@@ -185,6 +175,73 @@ pub fn open_kaku_config() {
             .detach();
         }
     });
+}
+
+fn try_open_with_vscode(config_path: &Path) -> anyhow::Result<bool> {
+    // When Kaku is launched from Finder/Dock, macOS provides a minimal PATH
+    // that won't include the `code` CLI symlink from Homebrew or /usr/local/bin.
+    // Probe well-known installation paths in addition to whatever is on PATH.
+    const CANDIDATES: &[&str] = &[
+        "code",
+        "/usr/local/bin/code",
+        "/opt/homebrew/bin/code",
+        "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+    ];
+
+    for candidate in CANDIDATES {
+        let result = Command::new(candidate)
+            .arg("-g")
+            .arg(config_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
+        match result {
+            Ok(status) if status.success() => return Ok(true),
+            Ok(status) => {
+                log::warn!(
+                    "Failed to open config with `{} -g` status={}; falling back",
+                    candidate,
+                    status.code().unwrap_or(-1)
+                );
+                return Ok(false);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                log::warn!("Failed to launch `{} -g`; falling back: {err:#}", candidate);
+                return Ok(false);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+fn try_open_with_default_app(config_path: &Path) -> anyhow::Result<bool> {
+    let status = Command::new("/usr/bin/open")
+        .arg(config_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("open kaku.lua with default app")?;
+    Ok(status.success())
+}
+
+fn open_with_textedit(config_path: &Path) -> anyhow::Result<()> {
+    let status = Command::new("/usr/bin/open")
+        .arg("-e")
+        .arg(config_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("open kaku.lua with TextEdit")?;
+    if !status.success() {
+        anyhow::bail!("failed to open {}", config_path.display());
+    }
+    Ok(())
 }
 
 pub fn set_default_terminal_with_feedback() {
