@@ -157,8 +157,11 @@ pub fn open_kaku_config() {
                 .join("kaku")
                 .join("kaku.lua");
 
-            if !try_open_with_vscode(&config_path)? && !try_open_with_default_app(&config_path)? {
-                open_with_textedit(&config_path)?;
+            if !try_open_with_vscode(&config_path)?
+                && !try_open_with_default_app(&config_path)?
+                && !open_with_vim_in_kaku(config_path.clone())
+            {
+                reveal_in_finder(&config_path)?;
             }
 
             Ok(())
@@ -229,18 +232,77 @@ fn try_open_with_default_app(config_path: &Path) -> anyhow::Result<bool> {
     Ok(status.success())
 }
 
-fn open_with_textedit(config_path: &Path) -> anyhow::Result<()> {
-    let status = Command::new("/usr/bin/open")
-        .arg("-e")
+/// Spawn the config file in vim/nvim inside a new Kaku terminal tab.
+/// Returns true if a suitable editor binary was found (spawn is async; errors are logged).
+fn open_with_vim_in_kaku(config_path: PathBuf) -> bool {
+    // Prefer nvim, then fall back to vim. Check absolute paths first so this
+    // works when Kaku is launched from Finder/Dock with a minimal PATH.
+    const CANDIDATES: &[&str] = &[
+        "/opt/homebrew/bin/nvim",
+        "/usr/local/bin/nvim",
+        "nvim",
+        "/opt/homebrew/bin/vim",
+        "/usr/local/bin/vim",
+        "/usr/bin/vim",
+        "vim",
+    ];
+
+    let editor = CANDIDATES
+        .iter()
+        .find(|&&p| {
+            if std::path::Path::new(p).is_absolute() {
+                std::path::Path::new(p).exists()
+            } else {
+                // Relative name: do a cheap probe via PATH
+                Command::new(p)
+                    .arg("--version")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            }
+        })
+        .copied();
+
+    let Some(editor) = editor else {
+        return false;
+    };
+
+    let editor = editor.to_string();
+    let path_str = config_path.to_string_lossy().into_owned();
+
+    promise::spawn::spawn_into_main_thread(async move {
+        let config = fast_config_snapshot();
+        let dpi = config.dpi.unwrap_or_else(|| ::window::default_dpi());
+        let size = config.initial_size(dpi as u32, None);
+        let term_config = Arc::new(config::TermConfig::with_config(config));
+        crate::spawn::spawn_command_impl(
+            &SpawnCommand {
+                args: Some(vec![editor, path_str]),
+                ..Default::default()
+            },
+            SpawnWhere::NewTab,
+            size,
+            None,
+            term_config,
+        );
+    })
+    .detach();
+
+    true
+}
+
+fn reveal_in_finder(config_path: &Path) -> anyhow::Result<()> {
+    Command::new("/usr/bin/open")
+        .arg("-R")
         .arg(config_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .context("open kaku.lua with TextEdit")?;
-    if !status.success() {
-        anyhow::bail!("failed to open {}", config_path.display());
-    }
+        .context("reveal kaku.lua in Finder")?;
     Ok(())
 }
 
