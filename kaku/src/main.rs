@@ -476,53 +476,20 @@ fn select_main_menu_command() -> anyhow::Result<Option<SubCommand>> {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return Ok(None);
                 }
-                KeyCode::Char('1') if can_use_menu_char_shortcut(key.modifiers) => {
-                    return Ok(Some(to_subcommand(MenuChoice::Ai)));
+                // Number keys: '1' through '6' map directly to menu items by index.
+                KeyCode::Char(c @ '1'..='6') if can_use_menu_char_shortcut(key.modifiers) => {
+                    let idx = (c as usize) - ('1' as usize);
+                    return Ok(Some(to_subcommand(MENU_ITEMS[idx].2)));
                 }
-                KeyCode::Char('2') if can_use_menu_char_shortcut(key.modifiers) => {
-                    return Ok(Some(to_subcommand(MenuChoice::Config)));
-                }
-                KeyCode::Char('3') if can_use_menu_char_shortcut(key.modifiers) => {
-                    return Ok(Some(to_subcommand(MenuChoice::Init)));
-                }
-                KeyCode::Char('4') if can_use_menu_char_shortcut(key.modifiers) => {
-                    return Ok(Some(to_subcommand(MenuChoice::Doctor)));
-                }
-                KeyCode::Char('5') if can_use_menu_char_shortcut(key.modifiers) => {
-                    return Ok(Some(to_subcommand(MenuChoice::Update)));
-                }
-                KeyCode::Char('6') if can_use_menu_char_shortcut(key.modifiers) => {
-                    return Ok(Some(to_subcommand(MenuChoice::Reset)));
-                }
-                KeyCode::Char('a') | KeyCode::Char('A')
-                    if can_use_menu_char_shortcut(key.modifiers) =>
-                {
-                    return Ok(Some(to_subcommand(MenuChoice::Ai)));
-                }
-                KeyCode::Char('c') | KeyCode::Char('C')
-                    if can_use_menu_char_shortcut(key.modifiers) =>
-                {
-                    return Ok(Some(to_subcommand(MenuChoice::Config)));
-                }
-                KeyCode::Char('i') | KeyCode::Char('I')
-                    if can_use_menu_char_shortcut(key.modifiers) =>
-                {
-                    return Ok(Some(to_subcommand(MenuChoice::Init)));
-                }
-                KeyCode::Char('d') | KeyCode::Char('D')
-                    if can_use_menu_char_shortcut(key.modifiers) =>
-                {
-                    return Ok(Some(to_subcommand(MenuChoice::Doctor)));
-                }
-                KeyCode::Char('u') | KeyCode::Char('U')
-                    if can_use_menu_char_shortcut(key.modifiers) =>
-                {
-                    return Ok(Some(to_subcommand(MenuChoice::Update)));
-                }
-                KeyCode::Char('r') | KeyCode::Char('R')
-                    if can_use_menu_char_shortcut(key.modifiers) =>
-                {
-                    return Ok(Some(to_subcommand(MenuChoice::Reset)));
+                // Letter shortcuts: first character of each menu item name.
+                KeyCode::Char(c) if can_use_menu_char_shortcut(key.modifiers) => {
+                    let lower = c.to_ascii_lowercase();
+                    if let Some((_, _, choice)) = MENU_ITEMS
+                        .iter()
+                        .find(|(name, _, _)| name.as_bytes().first().copied() == Some(lower as u8))
+                    {
+                        return Ok(Some(to_subcommand(*choice)));
+                    }
                 }
                 KeyCode::Char('q') | KeyCode::Char('Q')
                     if can_use_menu_char_shortcut(key.modifiers) =>

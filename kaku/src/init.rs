@@ -211,7 +211,9 @@ exit 127
     fn prompt_yes_no(question: &str) -> bool {
         use std::io::{BufRead, Write as _};
         print!("{} [Y/n] ", question);
-        std::io::stdout().flush().ok();
+        if let Err(err) = std::io::stdout().flush() {
+            eprintln!("warning: failed to flush stdout before prompt: {err}");
+        }
         let stdin = std::io::stdin();
         let mut line = String::new();
         if stdin.lock().read_line(&mut line).is_err() {

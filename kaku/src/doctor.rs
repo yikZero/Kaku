@@ -592,17 +592,31 @@ fn is_active_kaku_source_line(trimmed_line: &str) -> bool {
 }
 
 fn probe_wrapper(wrapper: &Path) -> DoctorCheck {
-    if !wrapper.is_file() {
-        return DoctorCheck {
+    fn wrapper_check(
+        status: DoctorStatus,
+        summary: String,
+        details: Vec<String>,
+        fix: Option<String>,
+    ) -> DoctorCheck {
+        DoctorCheck {
             title: "Wrapper Execution Probe",
-            status: DoctorStatus::Fail,
-            summary: format!(
+            status,
+            summary,
+            details,
+            fix,
+        }
+    }
+
+    if !wrapper.is_file() {
+        return wrapper_check(
+            DoctorStatus::Fail,
+            format!(
                 "Skipped probe because wrapper is missing: {}",
                 wrapper.display()
             ),
-            details: vec!["Generate the wrapper first with `kaku init`".to_string()],
-            fix: Some("Run `kaku init --update-only`".to_string()),
-        };
+            vec!["Generate the wrapper first with `kaku init`".to_string()],
+            Some("Run `kaku init --update-only`".to_string()),
+        );
     }
 
     // Spawn the child and poll with try_wait so we can kill it cleanly on timeout.
@@ -616,15 +630,12 @@ fn probe_wrapper(wrapper: &Path) -> DoctorCheck {
     {
         Ok(c) => c,
         Err(err) => {
-            return DoctorCheck {
-                title: "Wrapper Execution Probe",
-                status: DoctorStatus::Fail,
-                summary: format!("Failed to execute wrapper: {}", err),
-                details: vec![format!("Command: {} --version", wrapper.display())],
-                fix: Some(
-                    "Restore wrapper permissions or rerun `kaku init --update-only`".to_string(),
-                ),
-            };
+            return wrapper_check(
+                DoctorStatus::Fail,
+                format!("Failed to execute wrapper: {}", err),
+                vec![format!("Command: {} --version", wrapper.display())],
+                Some("Restore wrapper permissions or rerun `kaku init --update-only`".to_string()),
+            );
         }
     };
 
@@ -638,18 +649,17 @@ fn probe_wrapper(wrapper: &Path) -> DoctorCheck {
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return DoctorCheck {
-                    title: "Wrapper Execution Probe",
-                    status: DoctorStatus::Warn,
-                    summary: "Wrapper probe timed out after 5 seconds".to_string(),
-                    details: vec![
+                return wrapper_check(
+                    DoctorStatus::Warn,
+                    "Wrapper probe timed out after 5 seconds".to_string(),
+                    vec![
                         format!("Command: {} --version", wrapper.display()),
                         "The wrapper script did not exit within the time limit.".to_string(),
                     ],
-                    fix: Some(
+                    Some(
                         "Check that the kaku binary is accessible and not blocked by network or permission issues".to_string(),
                     ),
-                };
+                );
             }
             Err(err) => break Err(err),
         }
@@ -658,11 +668,10 @@ fn probe_wrapper(wrapper: &Path) -> DoctorCheck {
     match output {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            DoctorCheck {
-                title: "Wrapper Execution Probe",
-                status: DoctorStatus::Ok,
-                summary: "Wrapper can launch Kaku binary".to_string(),
-                details: if stdout.is_empty() {
+            wrapper_check(
+                DoctorStatus::Ok,
+                "Wrapper can launch Kaku binary".to_string(),
+                if stdout.is_empty() {
                     vec![format!(
                         "Command succeeded: {} --version",
                         wrapper.display()
@@ -673,32 +682,28 @@ fn probe_wrapper(wrapper: &Path) -> DoctorCheck {
                         format!("Output: {}", stdout),
                     ]
                 },
-                fix: None,
-            }
+                None,
+            )
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            DoctorCheck {
-                title: "Wrapper Execution Probe",
-                status: DoctorStatus::Fail,
-                summary: format!("Wrapper exited with status {}", output.status),
-                details: {
-                    let mut details = vec![format!("Command: {} --version", wrapper.display())];
-                    if !stderr.is_empty() {
-                        details.push(format!("stderr: {}", stderr));
-                    }
-                    details
-                },
-                fix: Some("Check Kaku.app location then run `kaku init --update-only`".to_string()),
+            let mut details = vec![format!("Command: {} --version", wrapper.display())];
+            if !stderr.is_empty() {
+                details.push(format!("stderr: {}", stderr));
             }
+            wrapper_check(
+                DoctorStatus::Fail,
+                format!("Wrapper exited with status {}", output.status),
+                details,
+                Some("Check Kaku.app location then run `kaku init --update-only`".to_string()),
+            )
         }
-        Err(err) => DoctorCheck {
-            title: "Wrapper Execution Probe",
-            status: DoctorStatus::Fail,
-            summary: format!("Failed to execute wrapper: {}", err),
-            details: vec![format!("Command: {} --version", wrapper.display())],
-            fix: Some("Restore wrapper permissions or rerun `kaku init --update-only`".to_string()),
-        },
+        Err(err) => wrapper_check(
+            DoctorStatus::Fail,
+            format!("Failed to execute wrapper: {}", err),
+            vec![format!("Command: {} --version", wrapper.display())],
+            Some("Restore wrapper permissions or rerun `kaku init --update-only`".to_string()),
+        ),
     }
 }
 
