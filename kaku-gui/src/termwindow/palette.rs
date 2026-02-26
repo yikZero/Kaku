@@ -162,7 +162,7 @@ fn build_commands(term_window: &mut TermWindow) -> Vec<ExpandedCommand> {
         .get_active_pane_or_overlay()
         .map(|pane| MuxPane(pane.pane_id()));
 
-    let mut commands = CommandDef::actions_for_palette_and_menubar(&config::configuration());
+    let mut commands = CommandDef::actions_for_palette_only(&config::configuration());
 
     match config::run_immediate_with_lua_config(|lua| {
         let mut entries: Vec<UserPaletteEntry> = vec![];
@@ -188,6 +188,7 @@ fn build_commands(term_window: &mut TermWindow) -> Vec<ExpandedCommand> {
                     action: entry.action,
                     keys: vec![],
                     menubar: &[],
+                    icon: entry.icon.map(Into::into),
                 });
             }
         }
@@ -345,6 +346,10 @@ impl CommandPalette {
                 if !cmd.menubar.is_empty() {
                     text.push_str(&cmd.menubar.join(" "));
                     text.push_str(": ");
+                }
+                if let Some(icon) = cmd.icon.as_deref().filter(|icon| !icon.is_empty()) {
+                    text.push_str(icon);
+                    text.push(' ');
                 }
                 text.push_str(&cmd.brief);
                 if !cmd.doc.is_empty() {
@@ -672,7 +677,12 @@ impl CommandPalette {
                 LinearRgba::TRANSPARENT.into()
             };
 
-            let label = command.brief.to_string();
+            let label = command
+                .icon
+                .as_deref()
+                .filter(|icon| !icon.is_empty())
+                .map(|icon| format!("{icon} {}", command.brief))
+                .unwrap_or_else(|| command.brief.to_string());
 
             // Build row with better spacing
             let mut row = vec![Element::new(

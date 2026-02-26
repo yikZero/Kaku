@@ -125,6 +125,60 @@ fn ai_toast_lifetime_ms(message: &str) -> u64 {
     }
 }
 
+/// Lookup table for simple lazygit/yazi toast messages dispatched via EmitEvent.
+fn lookup_kaku_toast(event_name: &str) -> Option<&'static str> {
+    const KAKU_TOAST_MAP: &[(&str, &str)] = &[
+        ("kaku-toast-try-lazygit", "Try Lazygit: Cmd+Shift+G"),
+        ("kaku-toast-lazygit-no-pane", "Lazygit: No active pane"),
+        (
+            "kaku-toast-lazygit-no-cwd",
+            "Lazygit: Cannot detect current directory",
+        ),
+        (
+            "kaku-toast-lazygit-not-git",
+            "Lazygit: Not a git repository",
+        ),
+        (
+            "kaku-toast-lazygit-missing",
+            "Lazygit not found. Run kaku init",
+        ),
+        (
+            "kaku-toast-lazygit-dispatch-failed",
+            "Lazygit: Dispatch failed",
+        ),
+        ("kaku-toast-yazi-no-pane", "Yazi: No active pane"),
+        ("kaku-toast-yazi-missing", "Yazi not found. Run kaku init"),
+        ("kaku-toast-yazi-dispatch-failed", "Yazi: Dispatch failed"),
+    ];
+    KAKU_TOAST_MAP
+        .iter()
+        .find(|(k, _)| *k == event_name)
+        .map(|(_, v)| *v)
+}
+
+/// Lookup table for AI result-notice toast messages dispatched via EmitEvent.
+fn lookup_ai_toast(event_name: &str) -> Option<&'static str> {
+    const AI_TOAST_MAP: &[(&str, &str)] = &[
+        (
+            "kaku-toast-ai-ready",
+            "Kaku Assistant suggestion ready. Press Cmd+Shift+E",
+        ),
+        ("kaku-toast-ai-unavailable", "Kaku Assistant unavailable"),
+        (
+            "kaku-toast-ai-missing-key",
+            "Run kaku ai to set up Kaku Assistant.",
+        ),
+        ("kaku-toast-ai-no-pane", "No active pane"),
+        ("kaku-toast-ai-no-suggestion", "No executable suggestion"),
+        ("kaku-toast-ai-send-failed", "Failed to apply suggestion"),
+        ("kaku-toast-ai-info", "Kaku Assistant update"),
+    ];
+    AI_TOAST_MAP
+        .iter()
+        .find(|(k, _)| *k == event_name)
+        .map(|(_, v)| *v)
+}
+
 lazy_static::lazy_static! {
     static ref WINDOW_CLASS: Mutex<String> = Mutex::new(wezterm_gui_subcommands::DEFAULT_WINDOW_CLASS.to_owned());
     static ref POSITION: Mutex<Option<GuiPosition>> = Mutex::new(None);
@@ -3205,50 +3259,15 @@ impl TermWindow {
                     pane.writer().write_all(b"kaku\n")?;
                 } else if name == "run-kaku-ai-config" {
                     pane.writer().write_all(b"kaku ai\n")?;
-                } else if name == "kaku-toast-try-lazygit" {
-                    self.show_toast("Try Lazygit: Cmd+Shift+G".to_string());
-                } else if name == "kaku-toast-lazygit-no-pane" {
-                    self.show_toast("Lazygit: No active pane".to_string());
-                } else if name == "kaku-toast-lazygit-no-cwd" {
-                    self.show_toast("Lazygit: Cannot detect current directory".to_string());
-                } else if name == "kaku-toast-lazygit-not-git" {
-                    self.show_toast("Lazygit: Not a git repository".to_string());
-                } else if name == "kaku-toast-lazygit-missing" {
-                    self.show_toast("Lazygit not found. Run kaku init".to_string());
-                } else if name == "kaku-toast-lazygit-dispatch-failed" {
-                    self.show_toast("Lazygit: Dispatch failed".to_string());
-                } else if name == "kaku-toast-yazi-no-pane" {
-                    self.show_toast("Yazi: No active pane".to_string());
-                } else if name == "kaku-toast-yazi-missing" {
-                    self.show_toast("Yazi not found. Run kaku init".to_string());
-                } else if name == "kaku-toast-yazi-dispatch-failed" {
-                    self.show_toast("Yazi: Dispatch failed".to_string());
+                } else if let Some(msg) = lookup_kaku_toast(name) {
+                    self.show_toast(msg.to_string());
                 } else if name == "kaku-toast-ai-analyzing" {
-                    let message = "Kaku Assistant analyzing command error".to_string();
-                    self.show_ai_progress_toast(message.clone(), ai_toast_lifetime_ms(&message));
-                } else if name == "kaku-toast-ai-ready" {
-                    let message = "Kaku Assistant suggestion ready. Press Cmd+Shift+E".to_string();
-                    self.show_ai_result_notice(message.clone(), ai_toast_lifetime_ms(&message));
-                } else if name == "kaku-toast-ai-unavailable" {
-                    let message = "Kaku Assistant unavailable".to_string();
-                    self.show_ai_result_notice(message.clone(), ai_toast_lifetime_ms(&message));
-                } else if name == "kaku-toast-ai-missing-key" {
-                    let message = "Run kaku ai to set up Kaku Assistant.".to_string();
-                    self.show_ai_result_notice(message.clone(), ai_toast_lifetime_ms(&message));
+                    let message = "Kaku Assistant analyzing command error";
+                    self.show_ai_progress_toast(message.to_string(), ai_toast_lifetime_ms(message));
                 } else if name == "kaku-toast-ai-applied" {
                     // No notification on successful apply; command output is enough.
-                } else if name == "kaku-toast-ai-no-pane" {
-                    let message = "No active pane".to_string();
-                    self.show_ai_result_notice(message.clone(), ai_toast_lifetime_ms(&message));
-                } else if name == "kaku-toast-ai-no-suggestion" {
-                    let message = "No executable suggestion".to_string();
-                    self.show_ai_result_notice(message.clone(), ai_toast_lifetime_ms(&message));
-                } else if name == "kaku-toast-ai-send-failed" {
-                    let message = "Failed to apply suggestion".to_string();
-                    self.show_ai_result_notice(message.clone(), ai_toast_lifetime_ms(&message));
-                } else if name == "kaku-toast-ai-info" {
-                    let message = "Kaku Assistant update".to_string();
-                    self.show_ai_result_notice(message.clone(), ai_toast_lifetime_ms(&message));
+                } else if let Some(msg) = lookup_ai_toast(name) {
+                    self.show_ai_result_notice(msg.to_string(), ai_toast_lifetime_ms(msg));
                 } else if let Some(payload) = name.strip_prefix("kaku-toast-ai-") {
                     if let Some(message) = decode_hex_event_payload(payload) {
                         let lifetime = ai_toast_lifetime_ms(&message);

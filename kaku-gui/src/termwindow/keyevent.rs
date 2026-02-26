@@ -564,11 +564,11 @@ impl super::TermWindow {
                 key.key_is_down,
                 None,
             ) {
-                if self.pane_state(pane.pane_id()).overlay.is_none() && !leader_active {
-                    self.ensure_line_editor_selection_for_pane(pane.pane_id());
-                    self.track_line_editor_selection_shortcut_raw(&key);
-                    self.sync_line_editor_selection_owner(pane.pane_id());
-                }
+                self.sync_raw_line_editor_selection_after_shortcut(
+                    pane.pane_id(),
+                    &key,
+                    leader_active,
+                );
                 key.set_handled();
                 return;
             }
@@ -590,11 +590,7 @@ impl super::TermWindow {
             key.key_is_down,
             None,
         ) {
-            if self.pane_state(pane.pane_id()).overlay.is_none() && !leader_active {
-                self.ensure_line_editor_selection_for_pane(pane.pane_id());
-                self.track_line_editor_selection_shortcut_raw(&key);
-                self.sync_line_editor_selection_owner(pane.pane_id());
-            }
+            self.sync_raw_line_editor_selection_after_shortcut(pane.pane_id(), &key, leader_active);
             key.set_handled();
             return;
         }
@@ -616,11 +612,7 @@ impl super::TermWindow {
             key.key_is_down,
             None,
         ) {
-            if self.pane_state(pane.pane_id()).overlay.is_none() && !leader_active {
-                self.ensure_line_editor_selection_for_pane(pane.pane_id());
-                self.track_line_editor_selection_shortcut_raw(&key);
-                self.sync_line_editor_selection_owner(pane.pane_id());
-            }
+            self.sync_raw_line_editor_selection_after_shortcut(pane.pane_id(), &key, leader_active);
             key.set_handled();
         }
     }
@@ -893,6 +885,19 @@ impl super::TermWindow {
             _ => {
                 self.clear_line_editor_selection();
             }
+        }
+    }
+
+    fn sync_raw_line_editor_selection_after_shortcut(
+        &mut self,
+        pane_id: PaneId,
+        key: &RawKeyEvent,
+        leader_active: bool,
+    ) {
+        if self.pane_state(pane_id).overlay.is_none() && !leader_active {
+            self.ensure_line_editor_selection_for_pane(pane_id);
+            self.track_line_editor_selection_shortcut_raw(key);
+            self.sync_line_editor_selection_owner(pane_id);
         }
     }
 
