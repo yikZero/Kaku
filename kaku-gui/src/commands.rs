@@ -66,7 +66,6 @@ pub struct CommandDef {
     pub args: &'static [ArgType],
     /// Where to place the command in a menubar
     pub menubar: &'static [&'static str],
-    #[allow(dead_code)]
     pub icon: Option<&'static str>,
 }
 
@@ -77,6 +76,7 @@ pub struct ExpandedCommand {
     pub action: KeyAssignment,
     pub keys: Vec<(Modifiers, KeyCode)>,
     pub menubar: &'static [&'static str],
+    pub icon: Option<Cow<'static, str>>,
 }
 
 impl std::fmt::Debug for CommandDef {
@@ -183,6 +183,7 @@ impl CommandDef {
                     keys,
                     action,
                     menubar: def.menubar,
+                    icon: def.icon.map(Cow::Borrowed),
                 })
             }
         }
@@ -202,7 +203,6 @@ impl CommandDef {
     }
 
     /// Returns only essential commands for Command Palette (fast, lightweight)
-    #[allow(dead_code)]
     pub fn actions_for_palette_only(config: &ConfigHandle) -> Vec<ExpandedCommand> {
         fn is_palette_noise_action(action: &KeyAssignment) -> bool {
             matches!(
@@ -284,6 +284,7 @@ impl CommandDef {
                     keys: vec![(*mods, keycode.clone())],
                     action: entry.action.clone(),
                     menubar: cmd.menubar,
+                    icon: cmd.icon.map(Cow::Borrowed),
                 });
             }
         }
@@ -470,6 +471,7 @@ impl CommandDef {
                 keys: vec![],
                 action: KeyAssignment::SpawnCommandInNewTab(cmd.clone()),
                 menubar: &["Shell"],
+                icon: None,
             });
         }
 
@@ -504,6 +506,7 @@ impl CommandDef {
                                 ..SpawnCommand::default()
                             }),
                             menubar: &["Shell"],
+                            icon: None,
                         });
                     } else {
                         result.push(ExpandedCommand {
@@ -512,6 +515,7 @@ impl CommandDef {
                             keys: vec![],
                             action: KeyAssignment::AttachDomain(name.to_string()),
                             menubar: &["Shell"],
+                            icon: None,
                         });
                     }
                 }
@@ -533,6 +537,7 @@ impl CommandDef {
                             name.to_string(),
                         )),
                         menubar: &["Shell"],
+                        icon: None,
                     });
                 }
             }
@@ -549,6 +554,7 @@ impl CommandDef {
                             spawn: None,
                         },
                         menubar: &["Window"],
+                        icon: None,
                     });
                 }
             }
@@ -561,6 +567,7 @@ impl CommandDef {
                     spawn: None,
                 },
                 menubar: &["Window"],
+                icon: None,
             });
         }
 
@@ -581,6 +588,7 @@ impl CommandDef {
                     keys: vec![(*mods, keycode.clone())],
                     action: entry.action.clone(),
                     menubar: cmd.menubar,
+                    icon: cmd.icon.map(Cow::Borrowed),
                 });
             }
         }
@@ -600,6 +608,7 @@ impl CommandDef {
                         keys: vec![],
                         action: entry.action.clone(),
                         menubar: cmd.menubar,
+                        icon: cmd.icon.map(Cow::Borrowed),
                     });
                 }
             }

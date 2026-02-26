@@ -482,7 +482,9 @@ impl GuiFrontEnd {
                     if let Some(quoted_file_name) = quoted_file_name {
                         log::trace!("Spawned {file_name} as pane_id {}", pane.pane_id());
                         let mut writer = pane.writer();
-                        write!(writer, "{quoted_file_name} ; exit\n").ok();
+                        if let Err(err) = write!(writer, "{quoted_file_name} ; exit\n") {
+                            log::warn!("failed to send spawned command to pane: {err:#}");
+                        }
                     } else {
                         log::trace!("Spawned pane_id {} with cwd={file_name}", pane.pane_id());
                     }
