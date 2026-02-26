@@ -9,8 +9,10 @@ use num_traits::ToPrimitive;
 use std::collections::HashMap;
 use std::io::{BufWriter, Write};
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use terminfo::{Database, Value};
 use termwiz::input::KeyboardEncoding;
 use url::Url;
@@ -40,6 +42,57 @@ lazy_static::lazy_static! {
         let data = include_bytes!("../../../termwiz/data/kaku");
         Database::from_buffer(&data[..]).unwrap()
     };
+}
+
+const PTY_ERROR_LOG_THROTTLE_MS: u64 = 5_000;
+static PTY_WRITE_ALL_LAST_LOG_MS: AtomicU64 = AtomicU64::new(0);
+static PTY_WRITE_ALL_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
+static PTY_WRITE_FMT_LAST_LOG_MS: AtomicU64 = AtomicU64::new(0);
+static PTY_WRITE_FMT_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
+static PTY_FLUSH_LAST_LOG_MS: AtomicU64 = AtomicU64::new(0);
+static PTY_FLUSH_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
+
+fn unix_now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+fn throttled_log_suppressed_count(last_log_ms: &AtomicU64, suppressed: &AtomicU64) -> Option<u64> {
+    let now = unix_now_millis();
+    loop {
+        let prev = last_log_ms.load(Ordering::Relaxed);
+        if now.saturating_sub(prev) < PTY_ERROR_LOG_THROTTLE_MS {
+            suppressed.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+
+        if last_log_ms
+            .compare_exchange(prev, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Some(suppressed.swap(0, Ordering::Relaxed));
+        }
+    }
+}
+
+fn log_pty_write_error_throttled(
+    kind: &str,
+    context: &str,
+    err: &std::io::Error,
+    last_log_ms: &AtomicU64,
+    suppressed: &AtomicU64,
+) {
+    if let Some(suppressed_count) = throttled_log_suppressed_count(last_log_ms, suppressed) {
+        if suppressed_count == 0 {
+            log::warn!("{context}: {kind} failed: {err:#}");
+        } else {
+            log::warn!(
+                "{context}: {kind} failed: {err:#} (suppressed {suppressed_count} similar errors)"
+            );
+        }
+    }
 }
 
 pub(crate) struct TabStop {
@@ -800,6 +853,42 @@ impl TerminalState {
         self.bracketed_paste
     }
 
+    fn write_all_to_pty(&mut self, context: &str, bytes: &[u8]) {
+        if let Err(err) = self.writer.write_all(bytes) {
+            log_pty_write_error_throttled(
+                "write_all",
+                context,
+                &err,
+                &PTY_WRITE_ALL_LAST_LOG_MS,
+                &PTY_WRITE_ALL_SUPPRESSED,
+            );
+        }
+    }
+
+    fn write_fmt_to_pty(&mut self, context: &str, args: std::fmt::Arguments<'_>) {
+        if let Err(err) = self.writer.write_fmt(args) {
+            log_pty_write_error_throttled(
+                "write_fmt",
+                context,
+                &err,
+                &PTY_WRITE_FMT_LAST_LOG_MS,
+                &PTY_WRITE_FMT_SUPPRESSED,
+            );
+        }
+    }
+
+    fn flush_pty(&mut self, context: &str) {
+        if let Err(err) = self.writer.flush() {
+            log_pty_write_error_throttled(
+                "flush",
+                context,
+                &err,
+                &PTY_FLUSH_LAST_LOG_MS,
+                &PTY_FLUSH_SUPPRESSED,
+            );
+        }
+    }
+
     /// Advise the terminal about a change in its focus state
     pub fn focus_changed(&mut self, focused: bool) {
         if focused == self.focused {
@@ -818,12 +907,17 @@ impl TerminalState {
                     x_pixel_offset: 0,
                     y_pixel_offset: 0,
                 })
-                .ok();
+                .unwrap_or_else(|err| {
+                    log::warn!("focus_changed: release mouse button failed: {err:#}")
+                });
             }
         }
         if self.focus_tracking {
-            write!(self.writer, "{}{}", CSI, if focused { "I" } else { "O" }).ok();
-            self.writer.flush().ok();
+            self.write_fmt_to_pty(
+                "focus_changed: focus-tracking response",
+                format_args!("{}{}", CSI, if focused { "I" } else { "O" }),
+            );
+            self.flush_pty("focus_changed: focus-tracking response");
         }
         self.focused = focused;
         if !focused {
@@ -1282,8 +1376,8 @@ impl TerminalState {
             names,
             res.escape_debug()
         );
-        self.writer.write_all(res.as_bytes()).ok();
-        self.writer.flush().ok();
+        self.write_all_to_pty("xt_get_tcap response", res.as_bytes());
+        self.flush_pty("xt_get_tcap response");
     }
 
     fn perform_device(&mut self, dev: Device) {
@@ -1333,8 +1427,8 @@ impl TerminalState {
                 ident.push_str(";52"); // Clipboard access
                 ident.push('c');
 
-                self.writer.write(ident.as_bytes()).ok();
-                self.writer.flush().ok();
+                self.write_all_to_pty("primary device attributes", ident.as_bytes());
+                self.flush_pty("primary device attributes");
             }
             Device::RequestSecondaryDeviceAttributes => {
                 // Response is: Pp ; Pv ; Pc
@@ -1348,33 +1442,36 @@ impl TerminalState {
                 // pv >= 95 < 277 -> ttymouse=xterm2
                 // pv >= 277 -> ttymouse=sgr
                 // pv >= 279 - xterm will probe for additional device settings.
-                self.writer.write(b"\x1b[>1;277;0c").ok();
-                self.writer.flush().ok();
+                self.write_all_to_pty("secondary device attributes", b"\x1b[>1;277;0c");
+                self.flush_pty("secondary device attributes");
             }
             Device::RequestTertiaryDeviceAttributes => {
-                self.writer
-                    .write(format!("\x1bP!|00000000{}", ST).as_bytes())
-                    .ok();
-                self.writer.flush().ok();
+                self.write_fmt_to_pty(
+                    "tertiary device attributes",
+                    format_args!("\x1bP!|00000000{}", ST),
+                );
+                self.flush_pty("tertiary device attributes");
             }
             Device::RequestTerminalNameAndVersion => {
-                self.writer.write(DCS.as_bytes()).ok();
-                self.writer
-                    .write(
-                        format!(">|{} {}{}", self.term_program, self.term_version, ST).as_bytes(),
-                    )
-                    .ok();
-                self.writer.flush().ok();
+                let term_program = self.term_program.clone();
+                let term_version = self.term_version.clone();
+                self.write_all_to_pty("terminal name/version response dcs", DCS.as_bytes());
+                self.write_fmt_to_pty(
+                    "terminal name/version response payload",
+                    format_args!(">|{} {}{}", term_program, term_version, ST),
+                );
+                self.flush_pty("terminal name/version response");
             }
             Device::RequestTerminalParameters(a) => {
-                self.writer
-                    .write(format!("\x1b[{};1;1;128;128;1;0x", a + 2).as_bytes())
-                    .ok();
-                self.writer.flush().ok();
+                self.write_fmt_to_pty(
+                    "terminal parameters response",
+                    format_args!("\x1b[{};1;1;128;128;1;0x", a + 2),
+                );
+                self.flush_pty("terminal parameters response");
             }
             Device::StatusReport => {
-                self.writer.write(b"\x1b[0n").ok();
-                self.writer.flush().ok();
+                self.write_all_to_pty("device status report", b"\x1b[0n");
+                self.flush_pty("device status report");
             }
             Device::XtSmGraphics(g) => {
                 let response = if matches!(g.item, XtSmGraphicsItem::Unspecified(_)) {
@@ -1415,8 +1512,8 @@ impl TerminalState {
 
                 let dev = Device::XtSmGraphics(response);
 
-                write!(self.writer, "\x1b[{}", dev).ok();
-                self.writer.flush().ok();
+                self.write_fmt_to_pty("xtsmgraphics response", format_args!("\x1b[{}", dev));
+                self.flush_pty("xtsmgraphics response");
             }
         }
     }
@@ -1433,8 +1530,11 @@ impl TerminalState {
 
         let prefix = if is_dec { "?" } else { "" };
 
-        write!(self.writer, "\x1b[{prefix}{number};3$y").ok();
-        self.writer.flush().ok();
+        self.write_fmt_to_pty(
+            "decqrm permanent response",
+            format_args!("\x1b[{prefix}{number};3$y"),
+        );
+        self.flush_pty("decqrm permanent response");
     }
 
     fn decqrm_response(&mut self, mode: Mode, mut recognized: bool, enabled: bool) {
@@ -1465,8 +1565,11 @@ impl TerminalState {
         };
 
         log::trace!("{:?} -> recognized={} status={}", mode, recognized, status);
-        write!(self.writer, "\x1b[{}{};{}$y", prefix, number, status).ok();
-        self.writer.flush().ok();
+        self.write_fmt_to_pty(
+            "decqrm response",
+            format_args!("\x1b[{}{};{}$y", prefix, number, status),
+        );
+        self.flush_pty("decqrm response");
     }
 
     fn perform_csi_mode(&mut self, mode: Mode) {
@@ -2084,8 +2187,11 @@ impl TerminalState {
                 let width = Some(screen.physical_cols as i64);
 
                 let response = Box::new(Window::ResizeWindowCells { width, height });
-                write!(self.writer, "{}", CSI::Window(response)).ok();
-                self.writer.flush().ok();
+                self.write_fmt_to_pty(
+                    "window report text area size cells",
+                    format_args!("{}", CSI::Window(response)),
+                );
+                self.flush_pty("window report text area size cells");
             }
 
             Window::ReportCellSizePixels => {
@@ -2096,8 +2202,11 @@ impl TerminalState {
                     width: Some((self.pixel_width / width) as i64),
                     height: Some((self.pixel_height / height) as i64),
                 });
-                write!(self.writer, "{}", CSI::Window(response)).ok();
-                self.writer.flush().ok();
+                self.write_fmt_to_pty(
+                    "window report cell size pixels",
+                    format_args!("{}", CSI::Window(response)),
+                );
+                self.flush_pty("window report cell size pixels");
             }
 
             Window::ReportTextAreaSizePixels => {
@@ -2105,19 +2214,23 @@ impl TerminalState {
                     width: Some(self.pixel_width as i64),
                     height: Some(self.pixel_height as i64),
                 });
-                write!(self.writer, "{}", CSI::Window(response)).ok();
-                self.writer.flush().ok();
+                self.write_fmt_to_pty(
+                    "window report text area size pixels",
+                    format_args!("{}", CSI::Window(response)),
+                );
+                self.flush_pty("window report text area size pixels");
             }
 
             Window::ReportWindowTitle => {
                 if self.config.enable_title_reporting() {
-                    write!(
-                        self.writer,
-                        "{}",
-                        OperatingSystemCommand::SetWindowTitleSun(self.title.clone())
-                    )
-                    .ok();
-                    self.writer.flush().ok();
+                    self.write_fmt_to_pty(
+                        "window report title",
+                        format_args!(
+                            "{}",
+                            OperatingSystemCommand::SetWindowTitleSun(self.title.clone())
+                        ),
+                    );
+                    self.flush_pty("window report title");
                 }
             }
 
@@ -2135,8 +2248,11 @@ impl TerminalState {
                     right.as_zero_based(),
                     bottom.as_zero_based(),
                 );
-                write!(self.writer, "\x1bP{}!~{:04x}\x1b\\", request_id, checksum).ok();
-                self.writer.flush().ok();
+                self.write_fmt_to_pty(
+                    "window checksum rectangular area",
+                    format_args!("\x1bP{}!~{:04x}\x1b\\", request_id, checksum),
+                );
+                self.flush_pty("window checksum rectangular area");
             }
             Window::ResizeWindowCells { .. } => {
                 // We don't allow the application to change the window size; that's
@@ -2617,8 +2733,8 @@ impl TerminalState {
                         })) as u32,
                 );
                 let report = CSI::Cursor(Cursor::ActivePositionReport { line, col });
-                write!(self.writer, "{}", report).ok();
-                self.writer.flush().ok();
+                self.write_fmt_to_pty("cursor active position report", format_args!("{}", report));
+                self.flush_pty("cursor active position report");
             }
             Cursor::SaveCursor => {
                 // The `CSI s` SaveCursor sequence is ambiguous with DECSLRM

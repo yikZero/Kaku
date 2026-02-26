@@ -10,6 +10,8 @@ use ordered_float::NotNan;
 use std::fmt::Write;
 use std::io::Write as _;
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use termwiz::input::KeyboardEncoding;
 use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
 use url::Url;
@@ -33,6 +35,55 @@ use wezterm_escape_parser::{
 pub(crate) struct Performer<'a> {
     pub state: &'a mut TerminalState,
     print: String,
+}
+
+const PTY_ERROR_LOG_THROTTLE_MS: u64 = 5_000;
+static PTY_WRITE_FMT_LAST_LOG_MS: AtomicU64 = AtomicU64::new(0);
+static PTY_WRITE_FMT_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
+static PTY_FLUSH_LAST_LOG_MS: AtomicU64 = AtomicU64::new(0);
+static PTY_FLUSH_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
+
+fn unix_now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+fn throttled_log_suppressed_count(last_log_ms: &AtomicU64, suppressed: &AtomicU64) -> Option<u64> {
+    let now = unix_now_millis();
+    loop {
+        let prev = last_log_ms.load(Ordering::Relaxed);
+        if now.saturating_sub(prev) < PTY_ERROR_LOG_THROTTLE_MS {
+            suppressed.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+
+        if last_log_ms
+            .compare_exchange(prev, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Some(suppressed.swap(0, Ordering::Relaxed));
+        }
+    }
+}
+
+fn log_pty_write_error_throttled(
+    kind: &str,
+    context: &str,
+    err: &std::io::Error,
+    last_log_ms: &AtomicU64,
+    suppressed: &AtomicU64,
+) {
+    if let Some(suppressed_count) = throttled_log_suppressed_count(last_log_ms, suppressed) {
+        if suppressed_count == 0 {
+            log::warn!("{context}: {kind} failed: {err:#}");
+        } else {
+            log::warn!(
+                "{context}: {kind} failed: {err:#} (suppressed {suppressed_count} similar errors)"
+            );
+        }
+    }
 }
 
 impl<'a> Deref for Performer<'a> {
@@ -60,6 +111,30 @@ impl<'a> Performer<'a> {
         Self {
             state,
             print: String::new(),
+        }
+    }
+
+    fn write_fmt_to_pty(&mut self, context: &str, args: std::fmt::Arguments<'_>) {
+        if let Err(err) = self.writer.write_fmt(args) {
+            log_pty_write_error_throttled(
+                "write_fmt",
+                context,
+                &err,
+                &PTY_WRITE_FMT_LAST_LOG_MS,
+                &PTY_WRITE_FMT_SUPPRESSED,
+            );
+        }
+    }
+
+    fn flush_pty(&mut self, context: &str) {
+        if let Err(err) = self.writer.flush() {
+            log_pty_write_error_throttled(
+                "flush",
+                context,
+                &err,
+                &PTY_FLUSH_LAST_LOG_MS,
+                &PTY_FLUSH_SUPPRESSED,
+            );
         }
     }
 
@@ -303,44 +378,52 @@ impl<'a> Performer<'a> {
                         match s.data.as_slice() {
                             &[b'"', b'p'] => {
                                 // DECSCL - select conformance level
-                                write!(self.writer, "{}1$r65;1\"p{}", DCS, ST).ok();
-                                self.writer.flush().ok();
+                                self.write_fmt_to_pty(
+                                    "decrqss decscl response",
+                                    format_args!("{}1$r65;1\"p{}", DCS, ST),
+                                );
+                                self.flush_pty("decrqss decscl response");
                             }
                             &[b'r'] => {
                                 // DECSTBM - top and bottom margins
                                 let margins = self.top_and_bottom_margins.clone();
-                                write!(
-                                    self.writer,
-                                    "{}1$r{};{}r{}",
-                                    DCS,
-                                    margins.start + 1,
-                                    margins.end,
-                                    ST
-                                )
-                                .ok();
-                                self.writer.flush().ok();
+                                self.write_fmt_to_pty(
+                                    "decrqss decstbm response",
+                                    format_args!(
+                                        "{}1$r{};{}r{}",
+                                        DCS,
+                                        margins.start + 1,
+                                        margins.end,
+                                        ST
+                                    ),
+                                );
+                                self.flush_pty("decrqss decstbm response");
                             }
                             &[b's'] => {
                                 // DECSLRM - left and right margins
                                 let margins = self.left_and_right_margins.clone();
-                                write!(
-                                    self.writer,
-                                    "{}1$r{};{}s{}",
-                                    DCS,
-                                    margins.start + 1,
-                                    margins.end,
-                                    ST
-                                )
-                                .ok();
-                                self.writer.flush().ok();
+                                self.write_fmt_to_pty(
+                                    "decrqss decslrm response",
+                                    format_args!(
+                                        "{}1$r{};{}s{}",
+                                        DCS,
+                                        margins.start + 1,
+                                        margins.end,
+                                        ST
+                                    ),
+                                );
+                                self.flush_pty("decrqss decslrm response");
                             }
                             _ => {
                                 if self.config.log_unknown_escape_sequences() {
                                     log::warn!("unhandled DECRQSS {:?}", s);
                                 }
                                 // Reply that the request is invalid
-                                write!(self.writer, "{}0$r{}", DCS, ST).ok();
-                                self.writer.flush().ok();
+                                self.write_fmt_to_pty(
+                                    "decrqss invalid response",
+                                    format_args!("{}0$r{}", DCS, ST),
+                                );
+                                self.flush_pty("decrqss invalid response");
                             }
                         }
                     }
@@ -473,8 +556,8 @@ impl<'a> Performer<'a> {
             ControlCode::Enquiry => {
                 let response = self.config.enq_answerback();
                 if response.len() > 0 {
-                    write!(self.writer, "{}", response).ok();
-                    self.writer.flush().ok();
+                    self.write_fmt_to_pty("enquiry answerback", format_args!("{}", response));
+                    self.flush_pty("enquiry answerback");
                 }
             }
 
@@ -566,8 +649,11 @@ impl<'a> Performer<'a> {
                         Some(KeyboardEncoding::Kitty(flags)) => *flags,
                         _ => KittyKeyboardFlags::NONE,
                     };
-                    write!(self.writer, "\x1b[?{}u", flags.bits()).ok();
-                    self.writer.flush().ok();
+                    self.write_fmt_to_pty(
+                        "kitty keyboard query support",
+                        format_args!("\x1b[?{}u", flags.bits()),
+                    );
+                    self.flush_pty("kitty keyboard query support");
                 }
             }
             CSI::Keyboard(Keyboard::ReportKittyState(_)) => {
@@ -773,10 +859,11 @@ impl<'a> Performer<'a> {
             OperatingSystemCommand::Unspecified(unspec) => {
                 if self.config.log_unknown_escape_sequences() {
                     let mut output = String::new();
-                    write!(&mut output, "Unhandled OSC ").ok();
+                    write!(&mut output, "Unhandled OSC ").expect("writing to String cannot fail");
 
                     for item in unspec {
-                        write!(&mut output, " {}", String::from_utf8_lossy(&item)).ok();
+                        write!(&mut output, " {}", String::from_utf8_lossy(&item))
+                            .expect("writing to String cannot fail");
                     }
                     log::warn!("{}", output);
                 }
@@ -784,7 +871,9 @@ impl<'a> Performer<'a> {
 
             OperatingSystemCommand::ClearSelection(selection) => {
                 let selection = selection_to_selection(selection);
-                self.set_clipboard_contents(selection, None).ok();
+                if let Err(err) = self.set_clipboard_contents(selection, None) {
+                    log::debug!("failed to clear clipboard selection via OSC 52: {err:#}");
+                }
             }
             OperatingSystemCommand::QuerySelection(_) => {}
             OperatingSystemCommand::SetSelection(selection, selection_data) => {
@@ -823,8 +912,8 @@ impl<'a> Performer<'a> {
                             },
                         },
                     );
-                    write!(self.writer, "{}", response).ok();
-                    self.writer.flush().ok();
+                    self.write_fmt_to_pty("iterm report cell size", format_args!("{}", response));
+                    self.flush_pty("iterm report cell size");
                 }
                 ITermProprietary::File(image) => self.set_image(*image),
                 ITermProprietary::SetUserVar { name, value } => {
@@ -935,7 +1024,13 @@ impl<'a> Performer<'a> {
                 }
             }
             OperatingSystemCommand::CurrentWorkingDirectory(url) => {
-                self.current_dir = Url::parse(&url).ok();
+                self.current_dir = match Url::parse(&url) {
+                    Ok(parsed) => Some(parsed),
+                    Err(err) => {
+                        log::debug!("failed to parse OSC current working directory '{url}': {err}");
+                        None
+                    }
+                };
                 if let Some(handler) = self.alert_handler.as_mut() {
                     handler.alert(Alert::CurrentWorkingDirectoryChanged);
                 }
@@ -952,8 +1047,11 @@ impl<'a> Performer<'a> {
                                         self.palette().colors.0[pair.palette_index as usize],
                                     ),
                                 }]);
-                            write!(self.writer, "{}", response).ok();
-                            self.writer.flush().ok();
+                            self.write_fmt_to_pty(
+                                "osc change color query response",
+                                format_args!("{}", response),
+                            );
+                            self.flush_pty("osc change color query response");
                         }
                         ColorOrQuery::Color(c) => {
                             self.palette_mut().colors.0[pair.palette_index as usize] = c;
@@ -1002,8 +1100,11 @@ impl<'a> Performer<'a> {
                                             vec![ColorOrQuery::Color(self.palette().$name.into())],
                                         );
                                         log::trace!("Color Query response {:?}", response);
-                                        write!(self.writer, "{}", response).ok();
-                                        self.writer.flush().ok();
+                                        self.write_fmt_to_pty(
+                                            "osc change dynamic color query response",
+                                            format_args!("{}", response),
+                                        );
+                                        self.flush_pty("osc change dynamic color query response");
                                     }
                                     ColorOrQuery::Color(c) => self.palette_mut().$name = c.into(),
                                 }

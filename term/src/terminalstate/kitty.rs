@@ -6,7 +6,6 @@ use ::image::{
 };
 use anyhow::Context;
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 use wezterm_cell::image::ImageDataType;
@@ -372,19 +371,31 @@ impl TerminalState {
 
         match (image_id, image_no) {
             (Some(id), Some(no)) => {
-                write!(self.writer, "\x1b_GI={},i={};{}\x1b\\", no, id, message).ok();
+                self.write_fmt_to_pty(
+                    "kitty image response with image_id and image_no",
+                    format_args!("\x1b_GI={},i={};{}\x1b\\", no, id, message),
+                );
             }
             (Some(id), None) => {
-                write!(self.writer, "\x1b_Gi={};{}\x1b\\", id, message).ok();
+                self.write_fmt_to_pty(
+                    "kitty image response with image_id",
+                    format_args!("\x1b_Gi={};{}\x1b\\", id, message),
+                );
             }
             (None, Some(no)) => {
-                write!(self.writer, "\x1b_GI={};{}\x1b\\", no, message).ok();
+                self.write_fmt_to_pty(
+                    "kitty image response with image_no",
+                    format_args!("\x1b_GI={};{}\x1b\\", no, message),
+                );
             }
             (None, None) => {
-                write!(self.writer, "\x1b_G{}\x1b\\", message).ok();
+                self.write_fmt_to_pty(
+                    "kitty image response",
+                    format_args!("\x1b_G{}\x1b\\", message),
+                );
             }
         }
-        self.writer.flush().ok();
+        self.flush_pty("kitty image response");
     }
 
     fn kitty_frame_compose(
