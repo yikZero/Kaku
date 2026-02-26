@@ -7,9 +7,9 @@ use crate::inputmap::InputMap;
 #[cfg(not(target_os = "macos"))]
 use crate::overlay::confirm_close_window;
 use crate::overlay::{
-    confirm_close_pane, confirm_close_tab, confirm_quit_program, launcher, start_overlay,
-    start_overlay_pane, show_debug_overlay, CopyModeParams, CopyOverlay, LauncherArgs,
-    LauncherFlags, QuickSelectOverlay,
+    confirm_close_pane, confirm_close_tab, confirm_quit_program, launcher, show_debug_overlay,
+    start_overlay, start_overlay_pane, CopyModeParams, CopyOverlay, LauncherArgs, LauncherFlags,
+    QuickSelectOverlay,
 };
 use crate::resize_increment_calculator::ResizeIncrementCalculator;
 use crate::scripting::guiwin::GuiWin;

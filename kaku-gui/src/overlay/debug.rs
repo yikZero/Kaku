@@ -163,7 +163,7 @@ pub fn show_debug_overlay(
                 Ok(config::LoadedConfig { lua: Some(lua), .. }) => lua,
                 _ => config::lua::make_lua_context(std::path::Path::new(""))?,
             }
-        },
+        }
     };
 
     lua.load("wezterm = require 'wezterm'").exec()?;
@@ -479,7 +479,9 @@ fn resolve_kaku_cli_for_doctor() -> Option<PathBuf> {
         }
     }
 
-    candidates.into_iter().find(|p| config::is_executable_file(p))
+    candidates
+        .into_iter()
+        .find(|p| config::is_executable_file(p))
 }
 
 fn resolve_kaku_app_bin_for_repair() -> Option<PathBuf> {
