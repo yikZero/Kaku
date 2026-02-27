@@ -37,6 +37,7 @@ Kaku comes with intuitive macOS-native shortcuts:
 
 | Action | Shortcut |
 | :--- | :--- |
+| Toggle Global Window | `Cmd + Opt + Ctrl + K` |
 | New Tab | `Cmd + T` |
 | New Window | `Cmd + N` |
 | Close Tab/Pane | `Cmd + W` |
