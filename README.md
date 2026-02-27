@@ -62,6 +62,7 @@ Kaku comes with intuitive macOS-native shortcuts:
 ### Intuitive Interactions
 
 - **Visual Bell**: A blinking dot appears on inactive tabs when background tasks finish.
+- **Active Pane**: A subtle dot highlights the currently focused pane during split-screen workflows.
 - **Global Hotkey**: Press `Cmd + Opt + Ctrl + K` anytime to float Kaku over your current workspace.
 - **Copy on Select**: Highlighting any text automatically copies it to your clipboard with a confirmation toast.
 - **Zoom Window**: Double-click the title bar or tab bar empty space to safely zoom or unzoom the window.
@@ -149,6 +150,14 @@ Achieved through aggressive stripping of unused features, lazy loading of color 
    `config.tab_inherit_working_directory`
    `config.split_pane_inherit_working_directory`
    All are enabled by default.
+
+6. **Are font size adjustments (`Cmd + +/-`) permanent?**
+
+   Yes. Unlike other terminals where shortcuts only temporarily scale the font, Kaku automatically saves your adjusted font size and restores it across restarts.
+
+7. **How can I customize the split pane aesthetics?**
+
+   Kaku features a natively refactored split pane design that eliminates text crowding. You can precisely control the split line gaps and thickness using `config.split_pane_gap` and `config.split_thickness` in your `~/.config/kaku/kaku.lua`.
 
 ## Contributors
 
