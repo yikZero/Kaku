@@ -40,6 +40,7 @@ Kaku comes with intuitive macOS-native shortcuts:
 | Toggle Global Window | `Cmd + Opt + Ctrl + K` |
 | New Tab | `Cmd + T` |
 | New Window | `Cmd + N` |
+| Open Folder in New Window | Drag folder to Dock icon |
 | Close Tab/Pane | `Cmd + W` |
 | Navigate Tabs | `Cmd + Shift + [`, `Cmd + Shift + ]` or `Cmd + 1-9` |
 | Navigate Panes | `Cmd + Opt + Arrows` |
@@ -47,6 +48,7 @@ Kaku comes with intuitive macOS-native shortcuts:
 | Split Pane Horizontal | `Cmd + Shift + D` |
 | Toggle Split Direction | `Cmd + Shift + S` |
 | Zoom/Unzoom Pane | `Cmd + Shift + Enter` |
+| Zoom/Unzoom Window | Double-click title bar |
 | Resize Pane | `Cmd + Ctrl + Arrows` |
 | Clear Screen | `Cmd + K` |
 | Doctor Panel | `Ctrl + Shift + L` |
