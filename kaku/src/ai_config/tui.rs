@@ -430,7 +430,7 @@ impl KakuAssistantConfig {
 
 impl Default for KakuAssistantConfig {
     fn default() -> Self {
-        Self::new(false, String::new(), String::new(), String::new())
+        Self::new(true, String::new(), String::new(), String::new())
     }
 }
 
@@ -448,7 +448,7 @@ fn parse_kaku_assistant_config(raw: &str) -> KakuAssistantConfig {
     let enabled = parsed
         .get("enabled")
         .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+        .unwrap_or(true);
     let api_key = parsed.get("api_key").and_then(|v| v.as_str()).unwrap_or("");
     let model = parsed.get("model").and_then(|v| v.as_str()).unwrap_or("");
     let base_url = parsed
