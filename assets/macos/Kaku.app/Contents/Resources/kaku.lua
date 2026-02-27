@@ -1993,8 +1993,8 @@ config.use_resize_increments = true
 
 config.initial_cols = 110
 config.initial_rows = 22
--- Mitigate high GPU usage on macOS 26.x by disabling window shadow.
-config.window_decorations = "INTEGRATED_BUTTONS|RESIZE|MACOS_FORCE_DISABLE_SHADOW"
+-- Keep native macOS window shadow by default.
+config.window_decorations = "INTEGRATED_BUTTONS|RESIZE"
 config.window_frame = {
   font = wezterm.font({ family = 'JetBrains Mono', weight = 'Regular' }),
   font_size = 13.0,
