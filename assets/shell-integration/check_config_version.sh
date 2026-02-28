@@ -100,7 +100,7 @@ else
 fi
 
 if [[ -f "$TOOLS_SCRIPT" ]]; then
-	if ! bash "$TOOLS_SCRIPT"; then
+	if ! KAKU_AUTO_INSTALL_TOOLS=1 bash "$TOOLS_SCRIPT"; then
 		echo ""
 		echo -e "${YELLOW}Optional tool installation failed.${NC}"
 	fi

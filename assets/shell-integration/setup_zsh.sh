@@ -598,7 +598,7 @@ alias glg='git log --stat'
 alias glgp='git log --stat -p'
 
 # yazi launcher — stays in the original directory after exit.
-y() {
+'y'() {
     emulate -L zsh
     setopt local_options no_sh_word_split
 

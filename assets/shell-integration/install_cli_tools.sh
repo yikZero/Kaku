@@ -158,15 +158,19 @@ install_missing_tools() {
 
 	if [[ -t 0 && -t 1 ]]; then
 		echo ""
-		echo -e "${BOLD}Optional CLI tools${NC}"
-		echo "Kaku can install missing tools with Homebrew:"
-		for tool in "${MISSING_TOOLS[@]}"; do
-			echo "  - $tool"
-		done
-		read -p "Install missing tools now? [Y/n] " -n 1 -r
-		echo
-		if [[ $REPLY =~ ^[Nn]$ ]]; then
-			return 0
+		if [[ "${KAKU_AUTO_INSTALL_TOOLS:-0}" == "1" ]]; then
+			echo -e "${BOLD}Installing optional CLI tools automatically...${NC}"
+		else
+			echo -e "${BOLD}Optional CLI tools${NC}"
+			echo "Kaku can install missing tools with Homebrew:"
+			for tool in "${MISSING_TOOLS[@]}"; do
+				echo "  - $tool"
+			done
+			read -p "Install missing tools now? [Y/n] " -n 1 -r
+			echo
+			if [[ $REPLY =~ ^[Nn]$ ]]; then
+				return 0
+			fi
 		fi
 	else
 		echo -e "${YELLOW}Non-interactive shell detected; skipped optional tool installation.${NC}"

@@ -162,7 +162,7 @@ fi
 if [[ "$INSTALL_SHELL" == "true" ]]; then
 	if [[ -f "$TOOLS_SCRIPT" ]]; then
 		echo ""
-		if ! bash "$TOOLS_SCRIPT"; then
+		if ! KAKU_AUTO_INSTALL_TOOLS=1 bash "$TOOLS_SCRIPT"; then
 			echo "Warning: optional tool installation failed."
 		fi
 	else
