@@ -3825,7 +3825,6 @@ impl WindowView {
         );
 
         let special_shortcut = (chars == "." && modifiers == Modifiers::SUPER)
-            || (chars == "," && modifiers == Modifiers::SUPER)
             || (chars == "<" && modifiers == (Modifiers::SUPER | Modifiers::SHIFT))
             || (chars == "\u{1b}" && modifiers == Modifiers::CTRL)
             || (chars == "\t" && modifiers == Modifiers::CTRL)
