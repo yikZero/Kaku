@@ -717,10 +717,10 @@ impl GuiFrontEnd {
                                 args: Some(vec![
                                     "sh".to_string(),
                                     "-c".to_string(),
-                                    format!(
-                                        "\"{}\" update; echo; read -p 'Press Enter to close...' -r",
-                                        kaku_cli
-                                    ),
+                                    "\"$1\" update; echo; read -p 'Press Enter to close...' -r"
+                                        .to_string(),
+                                    "--".to_string(),
+                                    kaku_cli,
                                 ]),
                                 ..Default::default()
                             },
