@@ -155,27 +155,30 @@ fn update_checker() {
 
     let update_file_name = config::DATA_DIR.join("check_update");
 
-    // Check if we already know about a newer version from the cached file
-    // If so, show notification immediately without waiting
-    if let Ok(content) = std::fs::read_to_string(&update_file_name) {
-        if let Ok(cached_release) = serde_json::from_str::<Release>(&content) {
-            let current = wezterm_version();
-            if is_newer(&cached_release.tag_name, current) {
-                log::info!(
-                    "update_checker: cached release {} is newer than current {}, showing notification",
-                    cached_release.tag_name,
-                    current
-                );
-                std::thread::sleep(initial_interval);
-                let my_sock =
-                    config::RUNTIME_DIR.join(format!("gui-sock-{}", unsafe { libc::getpid() }));
-                let socks = wezterm_client::discovery::discover_gui_socks();
-                if force_ui || socks.is_empty() || socks.first() == Some(&my_sock) {
-                    persistent_toast_notification_with_click_to_open_url(
-                        "Kaku Update Available",
-                        &format!("{} is available. Click to update.", cached_release.tag_name),
-                        "kaku://update",
+    // Check if we already know about a newer version from the cached file.
+    // If so, show notification immediately without waiting.
+    // Respect check_for_updates so disabled users don't get startup notifications.
+    if configuration().check_for_updates {
+        if let Ok(content) = std::fs::read_to_string(&update_file_name) {
+            if let Ok(cached_release) = serde_json::from_str::<Release>(&content) {
+                let current = wezterm_version();
+                if is_newer(&cached_release.tag_name, current) {
+                    log::info!(
+                        "update_checker: cached release {} is newer than current {}, showing notification",
+                        cached_release.tag_name,
+                        current
                     );
+                    std::thread::sleep(initial_interval);
+                    let my_sock =
+                        config::RUNTIME_DIR.join(format!("gui-sock-{}", unsafe { libc::getpid() }));
+                    let socks = wezterm_client::discovery::discover_gui_socks();
+                    if force_ui || socks.is_empty() || socks.first() == Some(&my_sock) {
+                        persistent_toast_notification_with_click_to_open_url(
+                            "Kaku Update Available",
+                            &format!("{} is available. Click to update.", cached_release.tag_name),
+                            "kaku://update",
+                        );
+                    }
                 }
             }
         }
