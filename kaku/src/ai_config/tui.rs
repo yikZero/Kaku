@@ -96,11 +96,6 @@ const FACTORY_DROID_AUTONOMY_OPTIONS: [&str; 5] =
     ["normal", "spec", "auto-low", "auto-medium", "auto-high"];
 const UI_ERROR_TTL: Duration = Duration::from_secs(5);
 
-// Hardcoded model lists for providers not in models.dev API
-const VIVGRID_MODELS: [&str; 2] = ["gpt-5.2-codex", "gpt-5.3-codex"];
-// Additional Anthropic models not yet in models.dev API
-const ANTHROPIC_EXTRA_MODELS: [&str; 1] = ["claude-opus-4-5"];
-
 static UI_ERRORS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
 fn ui_errors() -> &'static Mutex<Vec<String>> {
@@ -1383,26 +1378,6 @@ fn extract_opencode_fields(val: &serde_json::Value) -> Vec<FieldEntry> {
                         let prefixed = format!("{}/{}", auth_name, model);
                         if !model_options.contains(&prefixed) {
                             model_options.push(prefixed);
-                        }
-                    }
-
-                    // Add hardcoded models for vivgrid provider
-                    if auth_name == "vivgrid" {
-                        for model in VIVGRID_MODELS.iter() {
-                            let prefixed = format!("vivgrid/{}", model);
-                            if !model_options.contains(&prefixed) {
-                                model_options.push(prefixed);
-                            }
-                        }
-                    }
-
-                    // Add extra Anthropic models for github-copilot provider
-                    if auth_name == "github-copilot" {
-                        for model in ANTHROPIC_EXTRA_MODELS.iter() {
-                            let prefixed = format!("github-copilot/{}", model);
-                            if !model_options.contains(&prefixed) {
-                                model_options.push(prefixed);
-                            }
                         }
                     }
                 }
