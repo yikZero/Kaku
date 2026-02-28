@@ -2575,13 +2575,32 @@ fn is_non_menu_virtual_key(vkey: u16) -> bool {
     is_navigation_virtual_key(vkey) || is_function_virtual_key(vkey)
 }
 
+fn is_symbol_virtual_key(vkey: u16) -> bool {
+    [
+        kVK_ANSI_Comma,
+        kVK_ANSI_Period,
+        kVK_ANSI_Slash,
+        kVK_ANSI_Semicolon,
+        kVK_ANSI_Quote,
+        kVK_ANSI_LeftBracket,
+        kVK_ANSI_RightBracket,
+        kVK_ANSI_Backslash,
+        kVK_ANSI_Grave,
+        kVK_ANSI_Minus,
+        kVK_ANSI_Equal,
+    ]
+    .contains(&vkey)
+}
+
 fn should_intercept_special_shortcut(chars: &str, modifiers: Modifiers, virtual_key: u16) -> bool {
     let command_period = virtual_key == kVK_ANSI_Period && modifiers == Modifiers::SUPER;
-    let command_shift_comma =
-        virtual_key == kVK_ANSI_Comma && modifiers == (Modifiers::SUPER | Modifiers::SHIFT);
+    let command_shift_symbol = modifiers == (Modifiers::SUPER | Modifiers::SHIFT)
+        && is_symbol_virtual_key(virtual_key)
+        // Preserve macOS built-in Cmd+` and Cmd+Shift+` window cycling.
+        && virtual_key != kVK_ANSI_Grave;
 
     command_period
-        || command_shift_comma
+        || command_shift_symbol
         || (chars == "\u{1b}" && modifiers == Modifiers::CTRL)
         || (chars == "\t" && modifiers == Modifiers::CTRL)
         || (chars == "\x19"/* Shift-Tab: See issue #1902 */)
@@ -2682,10 +2701,17 @@ mod tests {
             Modifiers::SUPER,
             kVK_ANSI_Comma,
         ));
-        assert!(!should_intercept_special_shortcut(
+        // Cmd+Shift+. should be intercepted (symbol key)
+        assert!(should_intercept_special_shortcut(
             ">",
             Modifiers::SUPER | Modifiers::SHIFT,
             kVK_ANSI_Period,
+        ));
+        // Cmd+Shift+` should NOT be intercepted (window cycling)
+        assert!(!should_intercept_special_shortcut(
+            "~",
+            Modifiers::SUPER | Modifiers::SHIFT,
+            kVK_ANSI_Grave,
         ));
     }
 }
@@ -3540,6 +3566,13 @@ impl WindowView {
                 // Navigation/function keys can surface here as composed strings
                 // with modifier-dependent escape fragments. Prefer vkey mapping
                 // so they normalize into stable key codes.
+                (true, unmod)
+            } else if modifiers == (Modifiers::SUPER | Modifiers::SHIFT)
+                && is_symbol_virtual_key(virtual_key)
+            {
+                // For Cmd+Shift+symbol combinations, prefer virtual-key decoding so
+                // bindings can match stable base keys like "," across layouts/IME.
+                // Use exact match to avoid affecting Cmd+Ctrl+Shift+symbol etc.
                 (true, unmod)
             } else {
                 (false, unmod)
