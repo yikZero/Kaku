@@ -1226,7 +1226,6 @@ impl Configuration {
         }
         result
     }
-
 }
 
 #[derive(Clone, Debug)]
