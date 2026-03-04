@@ -203,9 +203,7 @@ impl StagingLayer {
     }
 
     fn copy_len(&self) -> usize {
-        self.vertices
-            .len()
-            .min(self.capacity * VERTICES_PER_CELL)
+        self.vertices.len().min(self.capacity * VERTICES_PER_CELL)
     }
 }
 
