@@ -59,14 +59,15 @@ install-tools:
 	@echo "Tools installed."
 
 install-hooks:
-	@if [ ! -d .git ]; then \
+	@hooks_dir="$$(git rev-parse --git-path hooks 2>/dev/null)" && \
+	if [ -z "$$hooks_dir" ]; then \
 		echo "install-hooks must be run from a git checkout."; \
 		exit 1; \
-	fi
-	@mkdir -p .git/hooks
-	@printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'exec make fmt-check test' > .git/hooks/pre-commit
-	@chmod +x .git/hooks/pre-commit
-	@echo "Installed pre-commit hook at .git/hooks/pre-commit"
+	fi && \
+	mkdir -p "$$hooks_dir" && \
+	printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'exec make fmt-check test' > "$$hooks_dir/pre-commit" && \
+	chmod +x "$$hooks_dir/pre-commit" && \
+	echo "Installed pre-commit hook at $$hooks_dir/pre-commit"
 
 test-webgpu-fallback:
 	./scripts/test_webgpu_fallback.sh --strict
