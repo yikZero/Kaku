@@ -65,6 +65,7 @@ const FULLSCREEN_ENTER_HIDE_CONTENT_MS: u64 = 30;
 const FULLSCREEN_EXIT_HIDE_CONTENT_MS: u64 = 20;
 const ZOOM_HIDE_CONTENT_MS: u64 = 20;
 const FULLSCREEN_DISPLAY_CHANGE_OPENGL_PRESENT_DEFER_MS: u64 = 300;
+const WINDOWED_DISPLAY_CHANGE_OPENGL_PRESENT_DEFER_MS: u64 = 150;
 const MOVE_PERSIST_DELAY_SECS: f64 = 0.35;
 // Keep these accessibility strings stable. Some voice input tools match
 // TextArea semantics and descriptions heuristically to decide whether the
@@ -364,7 +365,7 @@ mod cglbits {
                     if let Some(until) = window_view.display_change_opengl_present_until.get() {
                         if Instant::now() < until {
                             log::trace!(
-                                "skip flushBuffer: deferred after fullscreen display change"
+                                "skip flushBuffer: deferred after display change or wake"
                             );
                             return true;
                         }
@@ -1789,17 +1790,17 @@ impl WindowInner {
                 let fullscreen_like = transition_active
                     || native_fullscreen
                     || window_view.simple_fullscreen_active.get();
-                if fullscreen_like
-                    && inner
-                        .gl_context_pair
-                        .as_ref()
-                        .is_some_and(|pair| matches!(&pair.backend, BackendImpl::Cgl(_)))
+                if inner
+                    .gl_context_pair
+                    .as_ref()
+                    .is_some_and(|pair| matches!(&pair.backend, BackendImpl::Cgl(_)))
                 {
-                    arm_display_change_opengl_present_defer(
-                        window_view,
-                        window_id,
-                        FULLSCREEN_DISPLAY_CHANGE_OPENGL_PRESENT_DEFER_MS,
-                    );
+                    let defer_ms = if fullscreen_like {
+                        FULLSCREEN_DISPLAY_CHANGE_OPENGL_PRESENT_DEFER_MS
+                    } else {
+                        WINDOWED_DISPLAY_CHANGE_OPENGL_PRESENT_DEFER_MS
+                    };
+                    arm_display_change_opengl_present_defer(window_view, window_id, defer_ms);
                 }
                 if transition_active {
                     return true;
@@ -2626,8 +2627,8 @@ struct WindowView {
     simple_fullscreen_transition_active: Cell<bool>,
     /// Keep pane content hidden for a short time during fullscreen transitions.
     transition_hide_until: Cell<Option<Instant>>,
-    /// Delay CGL presents briefly after fullscreen display changes so AppKit
-    /// can rebuild the backing drawable before we call flushBuffer.
+    /// Delay CGL presents briefly after any display change or system wake so
+    /// AppKit can rebuild the backing drawable before we call flushBuffer.
     display_change_opengl_present_until: Cell<Option<Instant>>,
     /// Tracks native fullscreen transition state so we can stabilize resize behavior.
     native_fullscreen_transition_active: Cell<bool>,
