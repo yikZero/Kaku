@@ -33,6 +33,7 @@ mod imp {
 
     const KAKU_SOURCE_PATTERN: &str = "kaku/zsh/kaku.zsh";
     const KAKU_PATH_MARKER: &str = "# Kaku PATH Integration";
+    const KAKU_TMUX_SOURCE_PATTERN: &str = "kaku/tmux/kaku.tmux.conf";
     const KAKU_LEGACY_INLINE_MARKER: &str = "# Kaku Shell Integration";
     const KAKU_LEGACY_INLINE_VAR: &str = "KAKU_ZSH_DIR";
     const KAKU_LEGACY_SYNTAX_HINT: &str = "zsh-syntax-highlighting/zsh-syntax-highlighting.zsh";
@@ -92,6 +93,12 @@ mod imp {
 
         remove_zsh_integration(&mut report)?;
         remove_kaku_shell_dir(&mut report)?;
+        remove_tmux_integration(&mut report)?;
+        remove_file_if_exists(
+            config_home().join("tmux").join("kaku.tmux.conf"),
+            "removed managed tmux integration script",
+            &mut report,
+        )?;
         cleanup_git_delta_defaults(&mut report)?;
         cleanup_theme_block(&mut report)?;
         remove_file_if_exists(
@@ -161,7 +168,9 @@ mod imp {
             bail!("non-interactive terminal detected; rerun with --yes to confirm reset")
         }
 
-        println!("This will remove Kaku shell integration and reset Kaku-managed git defaults.");
+        println!(
+            "This will remove Kaku shell and tmux integration and reset Kaku-managed git defaults."
+        );
         print!("Continue with reset? [y/N] ");
         io::stdout().flush().context("flush stdout")?;
 
@@ -193,6 +202,22 @@ mod imp {
         } else {
             home_dir().join(".zshrc")
         }
+    }
+
+    fn tmuxrc_path() -> PathBuf {
+        home_dir().join(".tmux.conf")
+    }
+
+    fn contains_tmux_source_command(line: &str) -> bool {
+        line.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')'))
+            .any(|token| token == "source-file")
+    }
+
+    fn is_active_kaku_tmux_source_line(trimmed_line: &str) -> bool {
+        if trimmed_line.starts_with('#') || !trimmed_line.contains(KAKU_TMUX_SOURCE_PATTERN) {
+            return false;
+        }
+        contains_tmux_source_command(trimmed_line)
     }
 
     fn remove_zsh_integration(report: &mut ResetReport) -> anyhow::Result<()> {
@@ -253,6 +278,40 @@ mod imp {
         } else {
             report.skipped(format!("{} not found", kaku_init.display()));
         }
+        Ok(())
+    }
+
+    fn remove_tmux_integration(report: &mut ResetReport) -> anyhow::Result<()> {
+        let tmuxrc = tmuxrc_path();
+        if !tmuxrc.exists() {
+            report.skipped(format!("{} not found", tmuxrc.display()));
+            return Ok(());
+        }
+
+        let original = std::fs::read_to_string(&tmuxrc)
+            .with_context(|| format!("read {}", tmuxrc.display()))?;
+        let filtered: Vec<&str> = original
+            .lines()
+            .filter(|line| !is_active_kaku_tmux_source_line(line.trim_start()))
+            .collect();
+
+        if filtered.len() == original.lines().count() {
+            report.skipped(format!(
+                "no Kaku tmux integration found in {}",
+                tmuxrc.display()
+            ));
+            return Ok(());
+        }
+
+        let mut updated = filtered.join("\n");
+        if !updated.is_empty() {
+            updated.push('\n');
+        }
+        std::fs::write(&tmuxrc, updated).with_context(|| format!("write {}", tmuxrc.display()))?;
+        report.changed(format!(
+            "removed Kaku-managed tmux source line from {}",
+            tmuxrc.display()
+        ));
         Ok(())
     }
 
@@ -502,5 +561,29 @@ mod imp {
         let mut iter =
             std::fs::read_dir(path).with_context(|| format!("read {}", path.display()))?;
         Ok(iter.next().is_none())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{is_active_kaku_tmux_source_line, KAKU_TMUX_SOURCE_PATTERN};
+
+        #[test]
+        fn active_tmux_source_line_is_detected() {
+            let line =
+                r#"source-file "$HOME/.config/kaku/tmux/kaku.tmux.conf" # Kaku tmux Integration"#;
+            assert!(is_active_kaku_tmux_source_line(line));
+        }
+
+        #[test]
+        fn commented_tmux_source_line_is_ignored() {
+            let line = r#"# source-file "$HOME/.config/kaku/tmux/kaku.tmux.conf""#;
+            assert!(!is_active_kaku_tmux_source_line(line));
+        }
+
+        #[test]
+        fn plain_text_reference_is_ignored() {
+            let line = format!("note: {}", KAKU_TMUX_SOURCE_PATTERN);
+            assert!(!is_active_kaku_tmux_source_line(&line));
+        }
     }
 }

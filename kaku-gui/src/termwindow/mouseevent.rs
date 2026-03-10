@@ -57,6 +57,21 @@ fn should_zoom_title_area(
         && click_streak == Some(2)
 }
 
+fn should_preserve_tmux_bypass_reporting(
+    is_wheel_event: bool,
+    modifiers: window::Modifiers,
+    bypass_modifiers: window::Modifiers,
+    alt_screen: bool,
+    mouse_grabbed: bool,
+    in_tmux_process_tree: bool,
+) -> bool {
+    is_wheel_event
+        && alt_screen
+        && mouse_grabbed
+        && in_tmux_process_tree
+        && modifiers.contains(bypass_modifiers)
+}
+
 impl super::TermWindow {
     const TAB_DRAG_THRESHOLD: isize = 6;
 
@@ -1336,13 +1351,31 @@ impl super::TermWindow {
         } else {
             None
         };
+        let foreground_process_info = if is_wheel_event {
+            pane.get_foreground_process_info(CachePolicy::AllowStale)
+        } else {
+            None
+        };
         let foreground_bin = foreground_process
             .as_deref()
             .and_then(|name| name.rsplit('/').next());
+        let in_tmux_process_tree = foreground_bin == Some("tmux")
+            || foreground_process_info
+                .as_ref()
+                .map(|info| info.flatten_to_exe_names().contains("tmux"))
+                .unwrap_or(false);
         let less_without_alt = is_wheel_event
             && !pane.is_alt_screen_active()
             && !pane.is_mouse_grabbed()
             && foreground_bin == Some("less");
+        let preserve_tmux_bypass_reporting = should_preserve_tmux_bypass_reporting(
+            is_wheel_event,
+            event.modifiers,
+            self.config.bypass_mouse_reporting_modifiers,
+            pane.is_alt_screen_active(),
+            pane.is_mouse_grabbed(),
+            in_tmux_process_tree,
+        );
         let bypass_wheel_assignment_in_alt =
             is_wheel_event && pane.is_alt_screen_active() && !pane.is_mouse_grabbed();
         if less_without_alt {
@@ -1372,7 +1405,9 @@ impl super::TermWindow {
                 // that shift is not one of the mods when the mouse is grabbed.
                 let mut mouse_reporting = pane.is_mouse_grabbed();
                 if mouse_reporting {
-                    if modifiers.contains(self.config.bypass_mouse_reporting_modifiers) {
+                    if modifiers.contains(self.config.bypass_mouse_reporting_modifiers)
+                        && !preserve_tmux_bypass_reporting
+                    {
                         modifiers.remove(self.config.bypass_mouse_reporting_modifiers);
                         mouse_reporting = false;
                     }
@@ -1509,10 +1544,13 @@ fn mouse_press_to_tmb(press: &MousePress) -> TMB {
 
 #[cfg(test)]
 mod tests {
-    use super::{mouse_dispatch_target, should_zoom_title_area, MouseDispatchTarget};
+    use super::{
+        mouse_dispatch_target, should_preserve_tmux_bypass_reporting, should_zoom_title_area,
+        MouseDispatchTarget,
+    };
     use crate::termwindow::MouseCapture;
     use mux::pane::PaneId;
-    use window::WindowDecorations;
+    use window::{Modifiers, WindowDecorations};
 
     #[test]
     fn terminal_capture_keeps_release_routed_to_terminal() {
@@ -1552,6 +1590,30 @@ mod tests {
         assert!(!should_zoom_title_area(
             WindowDecorations::INTEGRATED_BUTTONS | WindowDecorations::RESIZE,
             Some(1),
+        ));
+    }
+
+    #[test]
+    fn preserves_shift_wheel_reporting_for_tmux_alt_screen() {
+        assert!(should_preserve_tmux_bypass_reporting(
+            true,
+            Modifiers::SHIFT,
+            Modifiers::SHIFT,
+            true,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn does_not_preserve_when_tmux_is_not_grabbing_mouse() {
+        assert!(!should_preserve_tmux_bypass_reporting(
+            true,
+            Modifiers::SHIFT,
+            Modifiers::SHIFT,
+            true,
+            false,
+            true,
         ));
     }
 }

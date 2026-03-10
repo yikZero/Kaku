@@ -69,6 +69,8 @@ if [[ ! -f "$TOOL_INSTALL_SCRIPT" ]]; then
 fi
 USER_CONFIG_DIR="$HOME/.config/kaku/zsh"
 KAKU_INIT_FILE="$USER_CONFIG_DIR/kaku.zsh"
+KAKU_TMUX_DIR="$HOME/.config/kaku/tmux"
+KAKU_TMUX_FILE="$KAKU_TMUX_DIR/kaku.tmux.conf"
 STARSHIP_CONFIG="$HOME/.config/starship.toml"
 YAZI_CONFIG_DIR="$HOME/.config/yazi"
 YAZI_CONFIG_FILE="$YAZI_CONFIG_DIR/yazi.toml"
@@ -79,8 +81,10 @@ YAZI_WRAPPER_FILE="$USER_CONFIG_DIR/bin/yazi"
 KAKU_YAZI_THEME_MARKER_START="# ===== Kaku Yazi Flavor (managed) ====="
 KAKU_YAZI_THEME_MARKER_END="# ===== End Kaku Yazi Flavor (managed) ====="
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
+TMUXRC="$HOME/.tmux.conf"
 BACKUP_SUFFIX=".kaku-backup-$(date +%s)"
 ZSHRC_BACKED_UP=0
+TMUXRC_BACKED_UP=0
 
 if [[ -d "$SCRIPT_DIR/yazi-flavors" ]]; then
 	KAKU_YAZI_FLAVOR_SOURCE_DIR="$SCRIPT_DIR/yazi-flavors"
@@ -92,6 +96,13 @@ backup_zshrc_once() {
 	if [[ -f "$ZSHRC" ]] && [[ "$ZSHRC_BACKED_UP" -eq 0 ]]; then
 		cp "$ZSHRC" "$ZSHRC$BACKUP_SUFFIX"
 		ZSHRC_BACKED_UP=1
+	fi
+}
+
+backup_tmuxrc_once() {
+	if [[ -f "$TMUXRC" ]] && [[ "$TMUXRC_BACKED_UP" -eq 0 ]]; then
+		cp "$TMUXRC" "$TMUXRC$BACKUP_SUFFIX"
+		TMUXRC_BACKED_UP=1
 	fi
 }
 
@@ -1276,9 +1287,124 @@ EOF
 
 echo -e "  ${GREEN}✓${NC} ${BOLD}Script${NC}      Generated kaku.zsh init script"
 
-# 4. Configure .zshrc
+# 4. Configure tmux (Optional)
+TMUX_SOURCE_LINE='source-file "$HOME/.config/kaku/tmux/kaku.tmux.conf" # Kaku tmux Integration'
+
+write_kaku_tmux_file() {
+	mkdir -p "$KAKU_TMUX_DIR"
+	cat <<'EOF' >"$KAKU_TMUX_FILE"
+# Kaku tmux Integration - DO NOT EDIT MANUALLY
+# This file is managed by Kaku.app. Any changes may be overwritten.
+
+set -g mouse on
+bind-key -n S-WheelUpPane if-shell -F '#{pane_in_mode}' 'send-keys -X -N 5 scroll-up' 'copy-mode -e -u'
+bind-key -n S-WheelDownPane if-shell -F '#{pane_in_mode}' 'send-keys -X -N 5 scroll-down' ''
+EOF
+	echo -e "  ${GREEN}✓${NC} ${BOLD}Script${NC}      Generated managed tmux integration"
+}
+
+normalize_kaku_tmux_source_line() {
+	if [[ ! -f "$TMUXRC" ]]; then
+		return
+	fi
+
+	local tmp_file
+	tmp_file="$(mktemp "${TMPDIR:-/tmp}/kaku-tmuxrc.XXXXXX")"
+
+	if awk -v source_line="$TMUX_SOURCE_LINE" '
+BEGIN { replaced = 0; extra = 0 }
+{
+	if ($0 ~ /^[[:space:]]*#/ ) {
+		print
+		next
+	}
+
+	if ($0 ~ /^[[:space:]]*source-file[[:space:]]+/ &&
+	    $0 ~ /kaku\/tmux\/kaku\.tmux\.conf/) {
+		if (!replaced) {
+			print source_line
+			replaced = 1
+		} else {
+			extra++
+		}
+		next
+	}
+
+	print
+}
+END {
+	if (replaced && extra > 0) {
+		exit 2
+	} else if (replaced) {
+		exit 0
+	}
+	exit 3
+}
+' "$TMUXRC" >"$tmp_file"; then
+		if ! cmp -s "$TMUXRC" "$tmp_file"; then
+			backup_tmuxrc_once
+			mv "$tmp_file" "$TMUXRC"
+			echo -e "  ${GREEN}✓${NC} ${BOLD}Integrate${NC}   Updated Kaku source line in .tmux.conf"
+		else
+			rm -f "$tmp_file"
+		fi
+	else
+		local awk_status="$?"
+		if [[ "$awk_status" == "2" ]]; then
+			if ! cmp -s "$TMUXRC" "$tmp_file"; then
+				backup_tmuxrc_once
+				mv "$tmp_file" "$TMUXRC"
+				echo -e "  ${GREEN}✓${NC} ${BOLD}Integrate${NC}   Removed duplicate Kaku source line(s) from .tmux.conf"
+			else
+				rm -f "$tmp_file"
+			fi
+		else
+			rm -f "$tmp_file"
+			if [[ "$awk_status" != "3" ]]; then
+				echo -e "${YELLOW}Warning: failed to normalize Kaku source line in .tmux.conf; leaving it unchanged.${NC}"
+			fi
+		fi
+	fi
+}
+
+has_kaku_tmux_source_line() {
+	if [[ ! -f "$TMUXRC" ]]; then
+		return 1
+	fi
+
+	if grep -Fqx "$TMUX_SOURCE_LINE" "$TMUXRC"; then
+		return 0
+	fi
+
+	grep -Eq '^[[:space:]]*source-file[[:space:]].*kaku/tmux/kaku\.tmux\.conf([[:space:]]|$)' "$TMUXRC"
+}
+
+ensure_kaku_tmux_integration() {
+	if ! command -v tmux >/dev/null 2>&1; then
+		echo -e "  ${BLUE}•${NC} ${BOLD}Integrate${NC}   Skipped tmux integration ${NC}(tmux not found)${NC}"
+		return
+	fi
+
+	write_kaku_tmux_file
+	normalize_kaku_tmux_source_line
+
+	if has_kaku_tmux_source_line; then
+		echo -e "  ${GREEN}✓${NC} ${BOLD}Integrate${NC}   Already linked in .tmux.conf"
+	else
+		backup_tmuxrc_once
+		if [[ -f "$TMUXRC" && -s "$TMUXRC" ]]; then
+			echo "" >>"$TMUXRC"
+		fi
+		echo "$TMUX_SOURCE_LINE" >>"$TMUXRC"
+		echo -e "  ${GREEN}✓${NC} ${BOLD}Integrate${NC}   Successfully patched .tmux.conf"
+	fi
+}
+
+ensure_kaku_tmux_integration
+
+# 5. Configure .zshrc
 PATH_LINE='[[ ":$PATH:" != *":$HOME/.config/kaku/zsh/bin:"* ]] && export PATH="$HOME/.config/kaku/zsh/bin:$PATH" # Kaku PATH Integration'
-SOURCE_LINE='[[ "${TERM:-}" == "kaku" && -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh" # Kaku Shell Integration'
+SOURCE_LINE='[[ -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh" # Kaku Shell Integration'
 
 # Migrate legacy inline block from older versions to the single source-line model.
 cleanup_legacy_inline_block() {
@@ -1539,7 +1665,7 @@ else
 	echo -e "  ${GREEN}✓${NC} ${BOLD}Integrate${NC}   Successfully patched .zshrc"
 fi
 
-# 5. Configure TouchID for Sudo (Optional)
+# 6. Configure TouchID for Sudo (Optional)
 # Reference: logic from www/mole/bin/touchid.sh
 configure_touchid() {
 	PAM_SUDO_FILE="/etc/pam.d/sudo"

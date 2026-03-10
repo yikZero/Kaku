@@ -375,7 +375,7 @@ fn build_shell_integration_group() -> DoctorGroup {
         title: "zshrc Sources Kaku Init",
         status: if source_check.read_error.is_some() {
             DoctorStatus::Fail
-        } else if source_check.all_active_lines_guarded() {
+        } else if source_check.has_active_lines() {
             DoctorStatus::Ok
         } else {
             DoctorStatus::Warn
@@ -384,17 +384,10 @@ fn build_shell_integration_group() -> DoctorGroup {
             format!("Could not read {}: {}", zshrc.display(), err)
         } else if source_check.missing_file {
             format!("No zshrc file found at {}", zshrc.display())
-        } else if source_check.all_active_lines_guarded() {
-            format!(
-                "Found {} guarded Kaku source line(s) in {}",
-                source_check.guarded_active_lines,
-                zshrc.display()
-            )
         } else if source_check.has_active_lines() {
             format!(
-                "Found {} unguarded and {} guarded Kaku source line(s) in {}",
-                source_check.unguarded_active_lines,
-                source_check.guarded_active_lines,
+                "Found {} active Kaku source line(s) in {}",
+                source_check.guarded_active_lines + source_check.unguarded_active_lines,
                 zshrc.display()
             )
         } else {
@@ -406,7 +399,7 @@ fn build_shell_integration_group() -> DoctorGroup {
                 "Fix permissions or path access for {} then run `kaku doctor` again",
                 zshrc.display()
             ))
-        } else if source_check.all_active_lines_guarded() {
+        } else if source_check.has_active_lines() {
             None
         } else {
             Some("Run `kaku init --update-only`".to_string())
@@ -458,6 +451,15 @@ fn build_runtime_group() -> DoctorGroup {
         summary: wrapper_probe.summary,
         details: wrapper_probe.details,
         fix: wrapper_probe.fix,
+    });
+
+    let login_zsh_probe = probe_login_zsh_integration();
+    checks.push(DoctorCheck {
+        title: "Login Zsh Integration Probe",
+        status: login_zsh_probe.status,
+        summary: login_zsh_probe.summary,
+        details: login_zsh_probe.details,
+        fix: login_zsh_probe.fix,
     });
 
     DoctorGroup {
@@ -531,12 +533,6 @@ impl ZshrcSourceCheck {
         self.guarded_active_lines + self.unguarded_active_lines > 0
     }
 
-    fn all_active_lines_guarded(&self) -> bool {
-        self.has_active_lines()
-            && self.unguarded_active_lines == 0
-            && self.malformed_escaped_path_lines == 0
-    }
-
     fn details(&self, zshrc: &Path) -> Vec<String> {
         let mut details = Vec::new();
         details.push(format!("Checked {}", zshrc.display()));
@@ -553,13 +549,13 @@ impl ZshrcSourceCheck {
             );
         } else {
             details.push(format!(
-                "Active source lines: {} guarded, {} unguarded",
-                self.guarded_active_lines, self.unguarded_active_lines
+                "Active source lines: {} total",
+                self.guarded_active_lines + self.unguarded_active_lines
             ));
         }
-        if self.unguarded_active_lines > 0 {
+        if self.guarded_active_lines > 0 {
             details.push(
-                "At least one Kaku source line is active in all terminals. Expected TERM=kaku guard on every active line."
+                "Found older Kaku-specific guarded source line variants; `kaku init --update-only` will normalize them."
                     .to_string(),
             );
         }
@@ -608,11 +604,10 @@ fn check_zshrc_source_line(zshrc: &Path) -> ZshrcSourceCheck {
             continue;
         }
         if is_active_kaku_source_line(trimmed) {
-            // Treat both `${TERM:-}` and `$TERM` guards as valid legacy/current
-            // forms, then require an equality check against `kaku`.
-            let guarded = (trimmed.contains("${TERM:-}") || trimmed.contains("$TERM"))
-                && trimmed.contains("==")
-                && trimmed.contains("kaku");
+            let guarded = trimmed.contains("WEZTERM_PANE")
+                || (trimmed.contains("TERM_PROGRAM")
+                    && trimmed.contains("==")
+                    && trimmed.contains("Kaku"));
             if guarded {
                 result.guarded_active_lines += 1;
             } else {
@@ -761,6 +756,145 @@ fn probe_wrapper(wrapper: &Path) -> DoctorCheck {
     }
 }
 
+fn parse_login_zsh_probe(stdout: &str) -> (Option<String>, Option<String>) {
+    let mut kaku_zsh_dir = None;
+    let mut ll_alias = None;
+
+    for line in stdout.lines() {
+        if let Some(value) = line.strip_prefix("__KAKU_ZSH_DIR__:") {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                kaku_zsh_dir = Some(trimmed.to_string());
+            }
+        }
+        if let Some(value) = line.strip_prefix("__KAKU_ALIAS__:") {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                ll_alias = Some(trimmed.to_string());
+            }
+        }
+    }
+
+    (kaku_zsh_dir, ll_alias)
+}
+
+fn probe_login_zsh_integration() -> DoctorCheck {
+    let zsh = PathBuf::from("/bin/zsh");
+    if !config::is_executable_file(&zsh) {
+        return DoctorCheck {
+            title: "Login Zsh Integration Probe",
+            status: DoctorStatus::Warn,
+            summary: format!("Skipped probe because zsh is missing: {}", zsh.display()),
+            details: vec!["Kaku shell integration targets zsh login shells".to_string()],
+            fix: Some("Install or restore /bin/zsh".to_string()),
+        };
+    }
+
+    let command = r#"print -r -- __KAKU_ZSH_DIR__:${KAKU_ZSH_DIR:-}; alias ll 2>/dev/null | sed 's/^/__KAKU_ALIAS__:/'"#;
+    let mut child = match Command::new(&zsh)
+        .args(["-lic", command])
+        .env("TERM", "xterm-256color")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(err) => {
+            return DoctorCheck {
+                title: "Login Zsh Integration Probe",
+                status: DoctorStatus::Fail,
+                summary: format!("Failed to execute login zsh probe: {}", err),
+                details: vec![format!("Command: {} -lic {}", zsh.display(), command)],
+                fix: Some("Run `kaku init --update-only` and then `exec zsh -l`".to_string()),
+            };
+        }
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let output = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break child.wait_with_output(),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return DoctorCheck {
+                    title: "Login Zsh Integration Probe",
+                    status: DoctorStatus::Warn,
+                    summary: "Login zsh probe timed out after 5 seconds".to_string(),
+                    details: vec![format!("Command: {} -lic {}", zsh.display(), command)],
+                    fix: Some(
+                        "Run `exec zsh -l` manually and confirm KAKU_ZSH_DIR is set".to_string(),
+                    ),
+                };
+            }
+            Err(err) => break Err(err),
+        }
+    };
+
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let (kaku_zsh_dir, ll_alias) = parse_login_zsh_probe(&stdout);
+
+            let mut details = vec![format!("Command: {} -lic {}", zsh.display(), command)];
+            if let Some(dir) = &kaku_zsh_dir {
+                details.push(format!("Observed KAKU_ZSH_DIR={dir}"));
+            } else {
+                details.push("KAKU_ZSH_DIR was not set in the login zsh probe".to_string());
+            }
+            if let Some(alias) = &ll_alias {
+                details.push(format!("Observed alias: {alias}"));
+            } else {
+                details.push("Alias `ll` was not defined in the login zsh probe".to_string());
+            }
+            let stderr = stderr.trim();
+            if !stderr.is_empty() {
+                details.push(format!("stderr: {stderr}"));
+            }
+
+            if !output.status.success() {
+                return DoctorCheck {
+                    title: "Login Zsh Integration Probe",
+                    status: DoctorStatus::Fail,
+                    summary: format!("Login zsh probe exited with status {}", output.status),
+                    details,
+                    fix: Some("Run `kaku init --update-only` and then `exec zsh -l`".to_string()),
+                };
+            }
+
+            if kaku_zsh_dir.is_some() {
+                DoctorCheck {
+                    title: "Login Zsh Integration Probe",
+                    status: DoctorStatus::Ok,
+                    summary: "Interactive login zsh loaded Kaku integration".to_string(),
+                    details,
+                    fix: None,
+                }
+            } else {
+                DoctorCheck {
+                    title: "Login Zsh Integration Probe",
+                    status: DoctorStatus::Warn,
+                    summary: "Interactive login zsh did not fully load Kaku integration"
+                        .to_string(),
+                    details,
+                    fix: Some("Run `kaku init --update-only` and then `exec zsh -l`".to_string()),
+                }
+            }
+        }
+        Err(err) => DoctorCheck {
+            title: "Login Zsh Integration Probe",
+            status: DoctorStatus::Fail,
+            summary: format!("Failed to collect login zsh probe output: {}", err),
+            details: vec![format!("Command: {} -lic {}", zsh.display(), command)],
+            fix: Some("Run `kaku init --update-only` and then `exec zsh -l`".to_string()),
+        },
+    }
+}
+
 fn home_dir() -> PathBuf {
     config::HOME_DIR.clone()
 }
@@ -872,16 +1006,16 @@ mod tests {
             &path,
             r#"# [[ "${TERM:-}" == "kaku" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh"
 [[ -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh"
-[[ "${TERM:-}" == "kaku" && -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh"
+[[ -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh"
 "#,
         )
         .expect("write zshrc");
 
         let check = check_zshrc_source_line(&path);
         assert!(check.commented_example);
-        assert_eq!(check.unguarded_active_lines, 1);
-        assert_eq!(check.guarded_active_lines, 1);
-        assert!(!check.all_active_lines_guarded());
+        assert_eq!(check.unguarded_active_lines, 2);
+        assert_eq!(check.guarded_active_lines, 0);
+        assert!(check.has_active_lines());
     }
 
     #[test]
@@ -890,7 +1024,7 @@ mod tests {
         let path = dir.path().join(".zshrc");
         fs::write(
             &path,
-            r#"[[ "${TERM:-}" == "kaku" && -f "\/Users/lex/.config/kaku/zsh/kaku.zsh" ]] && source "\/Users/lex/.config/kaku/zsh/kaku.zsh""#,
+            r#"[[ -f "\/Users/lex/.config/kaku/zsh/kaku.zsh" ]] && source "\/Users/lex/.config/kaku/zsh/kaku.zsh""#,
         )
         .expect("write zshrc");
 
@@ -898,6 +1032,29 @@ mod tests {
         assert_eq!(check.guarded_active_lines, 0);
         assert_eq!(check.unguarded_active_lines, 0);
         assert_eq!(check.malformed_escaped_path_lines, 1);
-        assert!(!check.all_active_lines_guarded());
+        assert!(!check.has_active_lines());
+    }
+
+    #[test]
+    fn parses_login_zsh_probe_output() {
+        let stdout = "__KAKU_ZSH_DIR__:/Users/lex/.config/kaku/zsh\n__KAKU_ALIAS__:ll='ls -lhF'\n";
+        let (dir, alias) = parse_login_zsh_probe(stdout);
+        assert_eq!(dir.as_deref(), Some("/Users/lex/.config/kaku/zsh"));
+        assert_eq!(alias.as_deref(), Some("ll='ls -lhF'"));
+    }
+
+    #[test]
+    fn ignores_missing_login_zsh_probe_values() {
+        let (dir, alias) = parse_login_zsh_probe("random output\n");
+        assert!(dir.is_none());
+        assert!(alias.is_none());
+    }
+
+    #[test]
+    fn login_probe_is_satisfied_without_ll_alias() {
+        let stdout = "__KAKU_ZSH_DIR__:/Users/lex/.config/kaku/zsh\n";
+        let (dir, alias) = parse_login_zsh_probe(stdout);
+        assert_eq!(dir.as_deref(), Some("/Users/lex/.config/kaku/zsh"));
+        assert!(alias.is_none());
     }
 }

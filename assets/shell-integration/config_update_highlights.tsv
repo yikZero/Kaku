@@ -12,3 +12,5 @@
 13	First-run setup and managed shell integration refresh are more stable across environments
 14	Fixed an early 0.6.0 zsh prompt helper issue and now regenerate the managed script correctly
 15	Yazi now follows Kaku dark and light themes automatically, with corrected folder and file colors in both modes
+15	Kaku now refreshes managed tmux integration automatically so Shift+wheel works in local tmux full-screen apps
+15	Kaku now always loads its managed zsh integration when available, fixing shells that missed aliases and prompt setup

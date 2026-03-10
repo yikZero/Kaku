@@ -3,7 +3,7 @@
 set -euo pipefail
 
 PATH_LINE='[[ ":$PATH:" != *":$HOME/.config/kaku/zsh/bin:"* ]] && export PATH="$HOME/.config/kaku/zsh/bin:$PATH" # Kaku PATH Integration'
-SOURCE_LINE='[[ "${TERM:-}" == "kaku" && -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh" # Kaku Shell Integration'
+SOURCE_LINE='[[ -f "$HOME/.config/kaku/zsh/kaku.zsh" ]] && source "$HOME/.config/kaku/zsh/kaku.zsh" # Kaku Shell Integration'
 
 normalize_kaku_path_line_file() {
   local input_file="$1"
