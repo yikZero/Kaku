@@ -61,7 +61,7 @@ use filedescriptor::{
     poll, pollfd, socketpair, AsRawSocketDescriptor, FileDescriptor, POLLHUP, POLLIN,
 };
 #[cfg(unix)]
-use libc::{c_int, SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
+use libc::{c_int, EBADF, EIO, SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
 use log::error;
 use metrics::histogram;
 use parking_lot::{
@@ -509,6 +509,11 @@ fn read_from_pane_pty(
     // responsiveness when closing panes and CPU overhead.
     const POLL_TIMEOUT_MS: u64 = 200;
 
+    // Tracks whether the pty fd became unrecoverable (EBADF/EIO). Used after
+    // the loop to force-close the pane instead of obeying exit_behavior, since
+    // a broken pty leaves the pane completely non-functional.
+    let mut pty_fatal = false;
+
     loop {
         if dead.load(Ordering::Acquire) {
             log::trace!("read_pty: dead flag set for pane {}", pane_id);
@@ -536,6 +541,14 @@ fn read_from_pane_pty(
                 }
                 Err(e) => {
                     error!("read_pty poll failed: pane {} {:?}", pane_id, e);
+                    // EBADF/EIO means the pty fd was invalidated (e.g. after macOS
+                    // sleep/wake). The pane is unrecoverable; show a visible message.
+                    if let filedescriptor::Error::Io(ref io_err) = e {
+                        if matches!(io_err.raw_os_error(), Some(EBADF) | Some(EIO)) {
+                            let _ = tx.write_all(b"\r\n[pty disconnected]\r\n");
+                            pty_fatal = true;
+                        }
+                    }
                     break;
                 }
                 Ok(_) => continue, // No data and no hangup, check dead flag
@@ -549,6 +562,12 @@ fn read_from_pane_pty(
             }
             Err(err) => {
                 error!("read_pty failed: pane {} {:?}", pane_id, err);
+                // EBADF/EIO means the pty fd is gone; show a message and force-close.
+                #[cfg(unix)]
+                if matches!(err.raw_os_error(), Some(EBADF) | Some(EIO)) {
+                    let _ = tx.write_all(b"\r\n[pty disconnected]\r\n");
+                    pty_fatal = true;
+                }
                 break;
             }
             Ok(size) => {
@@ -570,23 +589,38 @@ fn read_from_pane_pty(
         }
     }
 
-    match exit_behavior.unwrap_or_else(|| configuration().exit_behavior) {
-        ExitBehavior::Hold | ExitBehavior::CloseOnCleanExit => {
-            // We don't know if we can unilaterally close
-            // this pane right now, so don't!
-            promise::spawn::spawn_into_main_thread(async move {
-                let mux = Mux::get();
-                log::trace!("checking for dead windows after EOF on pane {}", pane_id);
-                mux.prune_dead_windows();
-            })
-            .detach();
-        }
-        ExitBehavior::Close => {
-            promise::spawn::spawn_into_main_thread(async move {
-                let mux = Mux::get();
-                mux.remove_pane(pane_id);
-            })
-            .detach();
+    if pty_fatal {
+        // The pty fd is gone (EBADF/EIO): no output can arrive, no input can be sent.
+        // Force-remove the pane regardless of exit_behavior — holding a completely
+        // non-functional pane open indefinitely is worse than closing it.
+        promise::spawn::spawn_into_main_thread(async move {
+            let mux = Mux::get();
+            log::warn!(
+                "read_pty: pty disconnected for pane {}, force-removing pane",
+                pane_id
+            );
+            mux.remove_pane(pane_id);
+        })
+        .detach();
+    } else {
+        match exit_behavior.unwrap_or_else(|| configuration().exit_behavior) {
+            ExitBehavior::Hold | ExitBehavior::CloseOnCleanExit => {
+                // We don't know if we can unilaterally close
+                // this pane right now, so don't!
+                promise::spawn::spawn_into_main_thread(async move {
+                    let mux = Mux::get();
+                    log::trace!("checking for dead windows after EOF on pane {}", pane_id);
+                    mux.prune_dead_windows();
+                })
+                .detach();
+            }
+            ExitBehavior::Close => {
+                promise::spawn::spawn_into_main_thread(async move {
+                    let mux = Mux::get();
+                    mux.remove_pane(pane_id);
+                })
+                .detach();
+            }
         }
     }
 

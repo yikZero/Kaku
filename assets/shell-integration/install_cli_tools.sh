@@ -20,7 +20,19 @@ resolve_brew_bin() {
 		return 0
 	fi
 
-	for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+	local candidates=(/opt/homebrew/bin/brew /usr/local/bin/brew)
+
+	# Support non-standard Homebrew prefix via HOMEBREW_PREFIX env var
+	if [[ -n "${HOMEBREW_PREFIX:-}" ]]; then
+		candidates=("$HOMEBREW_PREFIX/bin/brew" "${candidates[@]}")
+	fi
+
+	# Common user-installed locations (e.g. ~/homebrew or ~/.homebrew)
+	for user_dir in "$HOME/homebrew" "$HOME/.homebrew"; do
+		candidates+=("$user_dir/bin/brew")
+	done
+
+	for candidate in "${candidates[@]}"; do
 		if [[ -x "$candidate" ]]; then
 			echo "$candidate"
 			return 0
@@ -100,7 +112,18 @@ resolved_tool_path() {
 		return 0
 	fi
 
-	for candidate in "/opt/homebrew/bin/$tool_name" "/usr/local/bin/$tool_name"; do
+	local candidates=("/opt/homebrew/bin/$tool_name" "/usr/local/bin/$tool_name")
+
+	# If we already have a brew binary, derive the prefix for tool lookup
+	if [[ -n "${BREW_BIN:-}" && -x "$BREW_BIN" ]]; then
+		local brew_prefix
+		brew_prefix="$("$BREW_BIN" --prefix 2>/dev/null || true)"
+		if [[ -n "$brew_prefix" ]]; then
+			candidates=("$brew_prefix/bin/$tool_name" "${candidates[@]}")
+		fi
+	fi
+
+	for candidate in "${candidates[@]}"; do
 		if [[ -x "$candidate" ]]; then
 			echo "$candidate"
 			return 0
