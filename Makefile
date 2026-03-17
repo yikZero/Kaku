@@ -1,4 +1,4 @@
-.PHONY: all fmt fmt-check build app dev check test install-tools install-hooks test-webgpu-fallback release
+.PHONY: all fmt fmt-check build app dev check test install-tools install-hooks test-webgpu-fallback release dmg
 
 all: build
 
@@ -71,6 +71,9 @@ install-hooks:
 
 test-webgpu-fallback:
 	./scripts/test_webgpu_fallback.sh --strict
+
+dmg:
+	KAKU_SIGNING_IDENTITY="$$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Developer ID Application/{print $$2; exit}')" ./scripts/build.sh && ./scripts/notarize.sh
 
 release:
 	bash ./scripts/release.sh
