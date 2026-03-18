@@ -11,7 +11,7 @@ use crate::termwindow::{BorrowedShapeCacheKey, RenderState, ShapedInfo, TermWind
 use crate::utilsprites::RenderMetrics;
 use ::window::bitmaps::{TextureCoord, TextureRect, TextureSize};
 use ::window::{DeadKeyStatus, PointF, RectF, SizeF, WindowOps};
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use config::{
     BoldBrightening, ConfigHandle, DimensionContext, HorizontalWindowContentAlignment, TextStyle,
     VerticalWindowContentAlignment, VisualBellTarget,
@@ -409,10 +409,17 @@ impl crate::TermWindow {
             HorizontalWindowContentAlignment::Center => (horizontal_gap / 2.).round(),
             HorizontalWindowContentAlignment::Right => horizontal_gap,
         };
-        let top_gap = match self.config.window_content_alignment.vertical {
-            VerticalWindowContentAlignment::Top => 0.,
-            VerticalWindowContentAlignment::Center => (vertical_gap / 2.).round(),
-            VerticalWindowContentAlignment::Bottom => vertical_gap,
+        let top_gap = if self.layout_is_edge_to_edge() {
+            // When maximized/fullscreen, push the quantization slack to the top
+            // so terminal content fills to the window bottom edge.
+            let border = self.get_os_border();
+            (vertical_gap - border.top.get() as f32 - border.bottom.get() as f32).max(0.)
+        } else {
+            match self.config.window_content_alignment.vertical {
+                VerticalWindowContentAlignment::Top => 0.,
+                VerticalWindowContentAlignment::Center => (vertical_gap / 2.).round(),
+                VerticalWindowContentAlignment::Bottom => vertical_gap,
+            }
         };
 
         (padding_left + left_gap, padding_top + top_gap)
