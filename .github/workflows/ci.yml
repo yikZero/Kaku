@@ -77,6 +77,9 @@ jobs:
           cargo nextest run --locked -E 'not test(shapecache::test::ligatures_jetbrains)'
           cargo nextest run --locked -p wezterm-escape-parser
 
+      - name: Download vendor dependencies
+        run: bash scripts/download_vendor.sh
+
       - name: Shell integration smoke tests
         run: |
           bash assets/shell-integration/tests/normalize_kaku_source_line_smoke.sh
