@@ -2127,11 +2127,14 @@ impl WindowInner {
     }
 
     fn maximize(&mut self) {
-        if !self.is_zoomed() {
-            self.arm_transition_content_hide(ZOOM_HIDE_CONTENT_MS, "zoom_maximize", false);
-            unsafe {
-                NSWindow::zoom_(*self.window, nil);
-            }
+        // Always call zoom when explicitly requested by the user.
+        // NSWindow::isZoomed can falsely return YES after screen changes,
+        // which would cause the zoom call to be skipped even though the
+        // window is not actually maximized.
+        // <https://github.com/tw93/Kaku/issues/131>
+        self.arm_transition_content_hide(ZOOM_HIDE_CONTENT_MS, "zoom_maximize", false);
+        unsafe {
+            NSWindow::zoom_(*self.window, nil);
         }
     }
 
@@ -4716,11 +4719,13 @@ impl WindowView {
             let screen_changed = std::mem::take(&mut inner.screen_changed);
 
             // Note: isZoomed can falsely return YES in situations such as
-            // the current screen changing. We cannot detect that case here.
-            // There is some logic to compensate for this in
-            // wezterm-gui/src/termwindow/resize.rs.
+            // the current screen changing. Suppress it when screen_changed
+            // is true; the correct state will be reported on the next resize
+            // event once the screen reference has settled.
             // <https://github.com/wezterm/wezterm/issues/3503>
+            // <https://github.com/tw93/Kaku/issues/131>
             let is_zoomed = !is_full_screen
+                && !screen_changed
                 && inner.window.as_ref().map_or(false, |window| {
                     let window = window.load();
                     unsafe { msg_send![*window, isZoomed] }

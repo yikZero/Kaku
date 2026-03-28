@@ -609,16 +609,14 @@ impl super::TermWindow {
             )));
 
         if simple_dpi_change && cfg!(target_os = "macos") {
-            // Spooky action at a distance: on macOS, NSWindow::isZoomed can falsely
-            // return YES in situations such as the current screen changing.
-            // That causes window_state to believe that we are MAXIMIZED.
-            // We cannot easily detect that in the window layer, but at this
-            // layer, if we realize that the dpi was the only thing that changed
-            // then remove the MAXIMIZED state so that the can_resize check
-            // in adjust_font_scale will not block us from adapting to the new
-            // DPI. This is gross and it would be better handled at the macOS
-            // layer.
+            // On macOS, NSWindow::isZoomed can falsely return YES when the
+            // current screen changes. The window layer now suppresses isZoomed
+            // when screen_changed is true, but this belt-and-suspenders check
+            // also clears MAXIMIZED when only the DPI changed, so that the
+            // can_resize check in adjust_font_scale does not block adaptation
+            // to the new DPI.
             // <https://github.com/wezterm/wezterm/issues/3503>
+            // <https://github.com/tw93/Kaku/issues/131>
             self.window_state -= WindowState::MAXIMIZED;
         }
 
