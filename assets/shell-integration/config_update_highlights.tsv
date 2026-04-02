@@ -27,4 +27,6 @@
 18	fast-syntax-highlighting replaces zsh-syntax-highlighting with richer colors and better performance
 18	zoxide is installed via Homebrew automatically; your existing z history is preserved after import
 18	zoxide uses frecency (frequency + recency): if z kaku goes to Kaku/kaku instead of Kaku, use z Kaku/ or zi to select
+19	zsh-z replaces zoxide for directory jumping; your existing ~/.z history works immediately
+19	cd+Tab falls back to zsh-z history when filesystem completion has no match
 

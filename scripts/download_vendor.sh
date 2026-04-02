@@ -20,7 +20,7 @@ download_pinned_repo() {
 	local archive_path
 	local source_dir
 
-	echo "[$step/3] Syncing $name @ $ref..."
+	echo "[$step/4] Syncing $name @ $ref..."
 	if [[ -f "$marker_file" ]] && [[ "$(cat "$marker_file")" == "$ref" ]]; then
 		echo "$name already pinned to $ref, skipping."
 		return
@@ -47,16 +47,17 @@ download_pinned_repo() {
 	rm -rf "$temp_dir"
 }
 
-echo "[0/3] Cleaning legacy vendor binaries..."
+echo "[0/4] Cleaning legacy vendor binaries..."
 rm -f "$VENDOR_DIR/starship" "$VENDOR_DIR/delta" "$VENDOR_DIR/zoxide"
 rm -rf "$VENDOR_DIR/completions" "$VENDOR_DIR/man"
 rm -f "$VENDOR_DIR/README.md" "$VENDOR_DIR/CHANGELOG.md" "$VENDOR_DIR/LICENSE"
 # Remove plugins replaced in this version
-rm -rf "$VENDOR_DIR/zsh-z" "$VENDOR_DIR/zsh-syntax-highlighting"
+rm -rf "$VENDOR_DIR/zsh-syntax-highlighting"
 
 # Pin external shell integrations to exact commits so app/release artifacts stay reproducible.
 download_pinned_repo "1" "zsh-autosuggestions" "zsh-users/zsh-autosuggestions" "85919cd1ffa7d2d5412f6d3fe437ebdbeeec4fc5"
 download_pinned_repo "2" "fast-syntax-highlighting" "zdharma-continuum/fast-syntax-highlighting" "3d574ccf48804b10dca52625df13da5edae7f553"
 download_pinned_repo "3" "zsh-completions" "zsh-users/zsh-completions" "84615f3d0b0e943d5b1de862c9552e572c8e70bb"
+download_pinned_repo "4" "zsh-z" "agkozak/zsh-z" "cf9225feebfae55e557e103e95ce20eca5eff270"
 
 echo "Vendor dependencies downloaded to $VENDOR_DIR"

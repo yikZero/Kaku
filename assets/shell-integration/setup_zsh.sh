@@ -526,7 +526,7 @@ fi
 
 # Validate required plugin directories up front.
 # setup_zsh.sh may be run standalone, so provide a clear dependency hint.
-for plugin in fast-syntax-highlighting zsh-autosuggestions zsh-completions; do
+for plugin in fast-syntax-highlighting zsh-autosuggestions zsh-completions zsh-z; do
 	if [[ ! -d "$VENDOR_DIR/$plugin" ]]; then
 		echo -e "${YELLOW}Error: Missing plugin vendor directory: $VENDOR_DIR/$plugin${NC}"
 		echo -e "${YELLOW}Hint: Run scripts/download_vendor.sh before setup_zsh.sh.${NC}"
@@ -535,12 +535,12 @@ for plugin in fast-syntax-highlighting zsh-autosuggestions zsh-completions; do
 done
 
 # Remove legacy plugins replaced in this version
-rm -rf "$USER_CONFIG_DIR/plugins/zsh-z"
 rm -rf "$USER_CONFIG_DIR/plugins/zsh-syntax-highlighting"
 # Copy Plugins
 cp -R "$VENDOR_DIR/fast-syntax-highlighting" "$USER_CONFIG_DIR/plugins/"
 cp -R "$VENDOR_DIR/zsh-autosuggestions" "$USER_CONFIG_DIR/plugins/"
 cp -R "$VENDOR_DIR/zsh-completions" "$USER_CONFIG_DIR/plugins/"
+cp -R "$VENDOR_DIR/zsh-z" "$USER_CONFIG_DIR/plugins/"
 echo -e "  ${GREEN}✓${NC} ${BOLD}Tools${NC}       Installed Zsh plugins ${NC}(~/.config/kaku/zsh/plugins)${NC}"
 
 # Copy Starship Config (if not exists)
@@ -1047,46 +1047,19 @@ if ! (( \${+functions[_main_complete]} )) || ! (( \${+_comps} )); then
     fi
 fi
 
-# Auto-import zsh-z history if zoxide database is empty (first-time migration)
-_kaku_auto_import_zshz() {
-    # Only proceed if zoxide is available
-    if ! command -v zoxide &>/dev/null; then
-        return
-    fi
-
-    # Check if zoxide already has data
-    local db_dir="\${XDG_DATA_HOME:-\$HOME/.local/share}/zoxide"
-    local db_file="\$db_dir/db.zo"
-    if [[ -s "\$db_file" ]]; then
-        return  # zoxide already has entries, don't overwrite
-    fi
-
-    # Look for zsh-z database in common locations
-    local -a zshz_dbs=("\$HOME/.z" "\$HOME/.zsh-z" "\$HOME/.zsh-z/zsh-z.data")
-    local zshz_db=""
-    for db in "\${zshz_dbs[@]}"; do
-        if [[ -s "\$db" ]]; then
-            zshz_db="\$db"
-            break
-        fi
-    done
-
-    [[ -z "\$zshz_db" ]] && return  # No zsh-z history found
-
-    # Import to zoxide silently
-    zoxide import --from=z "\$zshz_db" &>/dev/null || true
-}
-_kaku_auto_import_zshz
-unset -f _kaku_auto_import_zshz
-
-# Load zoxide (smart directory jumping) if not already provided by user config.
-if command -v zoxide &>/dev/null && ! (( \${+functions[__zoxide_z]} )); then
-    eval "\$(zoxide init zsh)"
+# Load zsh-z (smart directory jumping) if not already provided by user config.
+if [[ -f "\$KAKU_ZSH_DIR/plugins/zsh-z/zsh-z.plugin.zsh" ]] && ! (( \${+functions[zshz]} )); then
+    # Default to smart case matching so \`z kaku\` prefers \`Kaku\` over lowercase
+    # path entries. Users can still override this in their own shell config.
+    : "\${ZSHZ_CASE:=smart}"
+    export ZSHZ_CASE
+    source "\$KAKU_ZSH_DIR/plugins/zsh-z/zsh-z.plugin.zsh"
 fi
 
-# cd + Tab falls back to zoxide frecency history when filesystem completion
-# has no match. Only register when zoxide is available.
-if command -v zoxide &>/dev/null; then
+# cd + Tab falls back to zsh-z frecency history when filesystem completion
+# has no match. Delegate ranking to zshz --complete so behavior stays aligned
+# with the plugin (frecency ordering, smart-case, future plugin changes).
+if (( \${+functions[zshz]} )); then
     _kaku_cd_history_complete() {
         emulate -L zsh
         setopt extended_glob no_sh_word_split
@@ -1102,16 +1075,18 @@ if command -v zoxide &>/dev/null; then
         [[ -n "\$token" ]] || return \$ret
         [[ "\$token" != -* ]] || return \$ret
 
+        (( \${+functions[zshz]} )) || return \$ret
+
         local -a matches
         local match
         while IFS= read -r match; do
             [[ -n "\$match" ]] || continue
             matches+=("\$match")
-        done < <(zoxide query --list -- "\$token" 2>/dev/null)
+        done < <(zshz --complete -- "\$token" 2>/dev/null)
 
         (( \${#matches[@]} )) || return \$ret
 
-        compadd -Q -U -X "zoxide history dirs" -- "\${matches[@]}"
+        compadd -Q -U -X "zsh-z history dirs" -- "\${matches[@]}"
         return 0
     }
 
