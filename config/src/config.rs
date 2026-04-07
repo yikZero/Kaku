@@ -422,6 +422,13 @@ pub struct Config {
     #[dynamic(default = "default_mux_output_parser_coalesce_delay_ms")]
     pub mux_output_parser_coalesce_delay_ms: u64,
 
+    /// Maximum time in milliseconds to hold synchronized output (mode 2026)
+    /// before force-flushing. Prevents indefinite holds from blocking rendering
+    /// when programs send BSU without ESU (e.g., CLAUDE_CODE_NO_FLICKER).
+    /// Set to 0 to disable the timeout.
+    #[dynamic(default = "default_mux_synchronized_output_timeout_ms")]
+    pub mux_synchronized_output_timeout_ms: u64,
+
     #[dynamic(default = "default_mux_env_remove")]
     pub mux_env_remove: Vec<String>,
 
@@ -2010,6 +2017,10 @@ fn default_swallow_mouse_click_on_window_focus() -> bool {
 
 fn default_mux_output_parser_coalesce_delay_ms() -> u64 {
     3
+}
+
+fn default_mux_synchronized_output_timeout_ms() -> u64 {
+    1000
 }
 
 fn default_mux_output_parser_buffer_size() -> usize {

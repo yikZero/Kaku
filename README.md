@@ -130,7 +130,7 @@ Big thanks to all contributors who helped build Kaku. Go follow them! ❤️
 - Got ideas or found bugs? Open an issue/PR or check [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 - I have two cats, TangYuan and Coke. If you think Kaku delights your life, you can feed them <a href="https://miaoyan.app/cats.html?name=Kaku" target="_blank">canned food 🥩</a>.
 
-<a href="https://miaoyan.app/cats.html?name=Kaku"><img src="https://rawcdn.githack.com/tw93/MiaoYan/vercel/assets/sponsors.svg" width="1000" loading="lazy" /></a>
+<a href="https://miaoyan.app/cats.html?name=Kaku"><img src="https://cdn.jsdelivr.net/gh/tw93/MiaoYan@main/assets/sponsors.svg" width="1000" loading="lazy" /></a>
 
 ## License
 

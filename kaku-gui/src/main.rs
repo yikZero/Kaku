@@ -88,6 +88,7 @@ use wezterm_gui_subcommands::{name_equals_value, StartCommand};
 use wezterm_mux_server_impl::update_mux_domains;
 use wezterm_toast_notification::*;
 
+mod ai_client;
 mod colorease;
 mod commands;
 mod customglyph;

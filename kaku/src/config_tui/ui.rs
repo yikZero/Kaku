@@ -502,8 +502,8 @@ fn render_editor(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_footer_line, footer_copy, resolve_main_layout, FooterAction, FooterLabelStyle,
-        MainLayoutMode, NORMAL_FOOTER_ACTIONS,
+        FooterAction, FooterLabelStyle, MainLayoutMode, NORMAL_FOOTER_ACTIONS, build_footer_line,
+        footer_copy, resolve_main_layout,
     };
     use crate::config_tui::Mode;
 

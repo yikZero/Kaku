@@ -243,6 +243,7 @@ fn parse_buffered_data(
     let mut parser = termwiz::escape::parser::Parser::new();
     let mut actions = vec![];
     let mut hold = false;
+    let mut hold_start: Option<Instant> = None;
     let mut action_size = 0;
     let mut delay = Duration::from_millis(configuration().mux_output_parser_coalesce_delay_ms);
     let mut deadline = None;
@@ -307,6 +308,7 @@ fn parse_buffered_data(
                             DecPrivateModeCode::SynchronizedOutput,
                         )))) => {
                             hold = true;
+                            hold_start = Some(Instant::now());
 
                             // Flush prior actions
                             if !actions.is_empty() {
@@ -323,10 +325,12 @@ fn parse_buffered_data(
                             DecPrivateMode::Code(DecPrivateModeCode::SynchronizedOutput),
                         ))) => {
                             hold = false;
+                            hold_start = None;
                             flush = true;
                         }
                         Action::CSI(CSI::Device(dev)) if matches!(**dev, Device::SoftReset) => {
                             hold = false;
+                            hold_start = None;
                             flush = true;
                         }
                         _ => {}
@@ -339,6 +343,25 @@ fn parse_buffered_data(
                     }
                 });
                 action_size += size;
+                // Force-flush if synchronized output hold has exceeded timeout.
+                // Prevents CLAUDE_CODE_NO_FLICKER and similar from blocking renders.
+                if hold && !actions.is_empty() {
+                    let timeout_ms = configuration().mux_synchronized_output_timeout_ms;
+                    if timeout_ms > 0 {
+                        if let Some(start) = hold_start {
+                            if start.elapsed() >= Duration::from_millis(timeout_ms) {
+                                send_actions_to_mux(
+                                    &pane,
+                                    pane_id,
+                                    &dead,
+                                    std::mem::take(&mut actions),
+                                );
+                                action_size = 0;
+                                hold_start = Some(Instant::now());
+                            }
+                        }
+                    }
+                }
                 if !actions.is_empty() && !hold {
                     // If we haven't accumulated too much data,
                     // pause for a short while to increase the chances

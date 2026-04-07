@@ -367,7 +367,8 @@ impl CommandDef {
             ) || matches!(
                 action,
                 EmitEvent(name)
-                    if name == "kaku-launch-lazygit"
+                    if name == "kaku-ai-chat"
+                        || name == "kaku-launch-lazygit"
                         || name == "kaku-launch-yazi"
                         || name == "run-kaku-ai-config"
             )
@@ -708,6 +709,7 @@ impl CommandDef {
                 "Shell" => match action {
                     SpawnWindow => 10,
                     SpawnTab(_) | SpawnCommandInNewTab(_) => 20,
+                    EmitEvent(name) if name == "kaku-ai-chat" => 20,
                     EmitEvent(name) if name == "run-kaku-ai-config" => 21,
                     EmitEvent(name) if name == "kaku-launch-lazygit" => 22,
                     EmitEvent(name) if name == "kaku-launch-yazi" => 23,
@@ -1516,7 +1518,16 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             icon: None,
         },
         EmitEvent(name) => {
-            if name == "run-kaku-ai-config" {
+            if name == "kaku-ai-chat" {
+                CommandDef {
+                    brief: "AI Chat".into(),
+                    doc: "Open AI conversation in current terminal pane".into(),
+                    keys: vec![(Modifiers::SUPER.union(Modifiers::SHIFT), "Space".into())],
+                    args: &[ArgType::ActivePane],
+                    menubar: &["Shell"],
+                    icon: None,
+                }
+            } else if name == "run-kaku-ai-config" {
                 CommandDef {
                     brief: "AI Config".into(),
                     doc: "Open AI configuration".into(),
@@ -2513,6 +2524,7 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         // ----------------- Shell
         SpawnTab(SpawnTabDomain::CurrentPaneDomain),
         SpawnWindow,
+        EmitEvent("kaku-ai-chat".to_string()),
         EmitEvent("run-kaku-ai-config".to_string()),
         EmitEvent("kaku-launch-lazygit".to_string()),
         EmitEvent("kaku-launch-yazi".to_string()),

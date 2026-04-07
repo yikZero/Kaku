@@ -105,12 +105,10 @@ fn apply_hyperlink_rules_wrapped_lines() {
     // Simulate a long URL that wraps across two physical terminal lines.
     // Line 1 contains the first 30 chars of the URL (marked as wrapped).
     // Line 2 contains the remaining chars.
-    let url_part1 = "https://accounts.example.com/o";  // 30 chars
-    let url_part2 = "/oauth2?code=abc123&state=xyz";   // remainder
+    let url_part1 = "https://accounts.example.com/o"; // 30 chars
+    let url_part2 = "/oauth2?code=abc123&state=xyz"; // remainder
 
-    let rules = vec![
-        Rule::new(r"\b\w+://\S+[_/a-zA-Z0-9-]", "$0").unwrap(),
-    ];
+    let rules = vec![Rule::new(r"\b\w+://\S+[_/a-zA-Z0-9-]", "$0").unwrap()];
 
     let mut line1: Line = url_part1.into();
     line1.set_last_cell_was_wrapped(true, SEQ_ZERO);
@@ -129,13 +127,21 @@ fn apply_hyperlink_rules_wrapped_lines() {
     // Check that the first cell of line1 has the full URL
     if let Some(cell) = line1.get_cell(0) {
         let link = cell.attrs().hyperlink().cloned();
-        assert_eq!(link, Some(expected_link.clone()), "line1 cell 0 should have full URL");
+        assert_eq!(
+            link,
+            Some(expected_link.clone()),
+            "line1 cell 0 should have full URL"
+        );
     }
 
     // Check that the first cell of line2 has the full URL
     if let Some(cell) = line2.get_cell(0) {
         let link = cell.attrs().hyperlink().cloned();
-        assert_eq!(link, Some(expected_link), "line2 cell 0 should have full URL");
+        assert_eq!(
+            link,
+            Some(expected_link),
+            "line2 cell 0 should have full URL"
+        );
     }
 }
 

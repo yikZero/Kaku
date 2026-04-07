@@ -499,7 +499,7 @@ impl LocalDomain {
             // that doesn't exist on the local system, process spawning can fail.
             // Another situation is `sudo -i` has the pane with set to a cwd
             // that is not accessible to the user.
-            if let Err(err) = Path::new(&dir).read_dir() {
+            if let Err(err) = std::fs::metadata(Path::new(&dir)) {
                 log::warn!(
                     "Directory {:?} is not readable and will not be \
                      used for the command we are spawning: {:#}",

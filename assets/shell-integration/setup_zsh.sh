@@ -742,7 +742,11 @@ EOF
 fi
 
 # 3. Create/Update Kaku Init File (managed by Kaku)
-cat <<EOF >"$KAKU_INIT_FILE"
+if [[ -f "$KAKU_INIT_FILE" ]]; then
+    cp "$KAKU_INIT_FILE" "${KAKU_INIT_FILE}.bak"
+fi
+KAKU_INIT_TMPFILE="${KAKU_INIT_FILE}.tmp.$$"
+cat <<EOF >"$KAKU_INIT_TMPFILE"
 # Kaku Zsh Integration - DO NOT EDIT MANUALLY
 # This file is managed by Kaku.app. Any changes may be overwritten.
 
@@ -1434,6 +1438,13 @@ function sudo {
 }
 fi
 EOF
+
+if [[ -s "$KAKU_INIT_TMPFILE" ]]; then
+    mv "$KAKU_INIT_TMPFILE" "$KAKU_INIT_FILE"
+else
+    echo -e "  ${RED}✗${NC} Generated kaku.zsh is empty, keeping previous version" >&2
+    rm -f "$KAKU_INIT_TMPFILE"
+fi
 
 echo -e "  ${GREEN}✓${NC} ${BOLD}Script${NC}      Generated kaku.zsh init script"
 

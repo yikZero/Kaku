@@ -1339,7 +1339,9 @@ impl WindowOps for Window {
     }
 
     fn set_clipboard(&self, _clipboard: Clipboard, text: String) {
-        ClipboardContext::new().write(text).ok();
+        if let Err(e) = ClipboardContext::new().write(text) {
+            log::error!("Failed to write to clipboard: {e:#}");
+        }
     }
 
     fn toggle_fullscreen(&self) {

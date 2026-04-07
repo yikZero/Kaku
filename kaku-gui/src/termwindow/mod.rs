@@ -4110,7 +4110,30 @@ impl TermWindow {
                 self.do_open_link_at_mouse_cursor(pane);
             }
             EmitEvent(name) => {
-                if name == "update-kaku" || name == "run-kaku-update" {
+                if name == "kaku-ai-chat" {
+                    let dims = pane.get_dimensions();
+                    let range =
+                        dims.physical_top..dims.physical_top + dims.viewport_rows as StableRowIndex;
+                    let (_, lines) = pane.get_lines(range);
+                    let visible_lines: Vec<String> =
+                        lines.iter().map(|l| l.as_str().to_string()).collect();
+                    let cwd = pane
+                        .get_current_working_dir(CachePolicy::AllowStale)
+                        .map(|u| u.path().to_string())
+                        .unwrap_or_default();
+                    let context = crate::overlay::ai_chat::TerminalContext {
+                        cwd,
+                        visible_lines,
+                        git_branch: None,
+                    };
+                    let pane_id = pane.pane_id();
+                    let (overlay, future) =
+                        start_overlay_pane(self, &pane, move |pane_id, term| {
+                            crate::overlay::ai_chat::ai_chat_overlay(pane_id, term, context)
+                        });
+                    self.assign_overlay_for_pane(pane_id, overlay);
+                    promise::spawn::spawn(future).detach();
+                } else if name == "update-kaku" || name == "run-kaku-update" {
                     crate::frontend::run_kaku_update_from_menu();
                 } else if name == "run-kaku-cli" {
                     pane.writer().write_all(b"kaku\n")?;

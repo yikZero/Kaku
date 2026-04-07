@@ -142,10 +142,7 @@ fn capture_pane(pane_id: usize) -> Option<ScreenUpdate> {
 
 // ── HTTP routes ───────────────────────────────────────────────────────────────
 
-async fn route_config(
-    Query(query): Query<WsQuery>,
-    headers: axum::http::HeaderMap,
-) -> Response {
+async fn route_config(Query(query): Query<WsQuery>, headers: axum::http::HeaderMap) -> Response {
     if !check_token(&query, &headers) {
         return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
     }
@@ -189,10 +186,7 @@ async fn route_config(
     }
 }
 
-async fn route_panes(
-    Query(query): Query<WsQuery>,
-    headers: axum::http::HeaderMap,
-) -> Response {
+async fn route_panes(Query(query): Query<WsQuery>, headers: axum::http::HeaderMap) -> Response {
     if !check_token(&query, &headers) {
         return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
     }
@@ -242,7 +236,11 @@ async fn route_qr(
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<SocketAddr>,
 ) -> Response {
     if !addr.ip().is_loopback() {
-        return (StatusCode::FORBIDDEN, "QR endpoint only accessible from localhost").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "QR endpoint only accessible from localhost",
+        )
+            .into_response();
     }
     route_qr_inner().await.into_response()
 }
@@ -376,7 +374,10 @@ async fn handle_ws(
 
         if let Ok(ClientMsg::Input { text: input, .. }) = serde_json::from_str(&text) {
             if input.len() > MAX_INPUT_LEN {
-                log::warn!("kaku-remote: input too large ({} bytes), dropping", input.len());
+                log::warn!(
+                    "kaku-remote: input too large ({} bytes), dropping",
+                    input.len()
+                );
                 continue;
             }
             if let Some(mux) = Mux::try_get() {
@@ -610,7 +611,10 @@ async fn run_tunnel_session(
                 }) = serde_json::from_str::<ClientMsg>(text.as_str())
                 {
                     if input.len() > MAX_INPUT_LEN {
-                        log::warn!("kaku-tunnel: input too large ({} bytes), dropping", input.len());
+                        log::warn!(
+                            "kaku-tunnel: input too large ({} bytes), dropping",
+                            input.len()
+                        );
                         continue;
                     }
                     if let Some(mux) = Mux::try_get() {
@@ -663,7 +667,11 @@ pub fn start() {
         mux.subscribe(move |notification| {
             match notification {
                 MuxNotification::PaneOutput(pane_id) => {
-                    on_pane_output(pane_id.into(), senders_for_sub.clone(), throttle_for_sub.clone());
+                    on_pane_output(
+                        pane_id.into(),
+                        senders_for_sub.clone(),
+                        throttle_for_sub.clone(),
+                    );
                 }
                 MuxNotification::PaneRemoved(pane_id) => {
                     let id: usize = pane_id.into();
