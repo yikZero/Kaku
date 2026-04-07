@@ -2944,16 +2944,12 @@ wezterm.on('user-var-changed', function(window, pane, name, value)
     ai_debug_log("user-var-changed ignored invalid exit_code")
     return
   end
-  if exit_code == 0 then
-    ai_debug_log("user-var-changed ignored exit_code=0")
-    return
-  end
-  if exit_code == 130 then
-    ai_debug_log("user-var-changed ignored exit_code=130")
-    return
-  end
-  if exit_code == 141 then
-    ai_debug_log("user-var-changed ignored exit_code=141")
+  -- 0=success, 129=SIGHUP, 130=Ctrl+C/SIGINT, 131=Ctrl+\/SIGQUIT, 133=SIGTRAP,
+  -- 137=SIGKILL, 138=SIGUSR1, 140=SIGUSR2, 141=SIGPIPE, 143=SIGTERM, 148=Ctrl+Z/SIGTSTP
+  local ignored_exit_codes = { [0]=true, [129]=true, [130]=true, [131]=true, [133]=true,
+                                [137]=true, [138]=true, [140]=true, [141]=true, [143]=true, [148]=true }
+  if ignored_exit_codes[exit_code] then
+    ai_debug_log("user-var-changed ignored exit_code=" .. tostring(exit_code))
     return
   end
 
