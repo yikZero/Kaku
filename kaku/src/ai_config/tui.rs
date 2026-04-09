@@ -2628,7 +2628,7 @@ struct KakuAssistantConfig {
     model: String,
     /// Base URL for the API endpoint (never empty, falls back to default)
     base_url: String,
-    /// Provider preset name (e.g. "VivGrid", "MiniMax", "OpenAI", "Custom")
+    /// Provider preset name (e.g. "OpenAI", "Custom")
     provider: String,
     /// Optional extra request headers as `Name: Value`
     custom_headers: Vec<String>,
@@ -2804,7 +2804,7 @@ fn write_kaku_assistant_config(path: &Path, cfg: &KakuAssistantConfig) -> anyhow
         "# enabled: true enables command analysis suggestions; false disables requests.\n",
     );
     out.push_str("# api_key: provider API key, example: \"sk-xxxx\".\n");
-    out.push_str("# model: model id, example: \"DeepSeek-V3.2\" or \"MiniMax-M2.7\".\n");
+    out.push_str("# model: model id, example: \"gpt-5.4-mini\" or \"gpt-4o\".\n");
     out.push_str("# base_url: chat-completions API root URL.\n");
     out.push_str(
         "# custom_headers: optional extra HTTP headers for enterprise proxies or API gateways.\n",
@@ -6299,48 +6299,43 @@ provider = "managed:kimi-code"
     #[test]
     fn kaku_assistant_fields_include_provider_dropdown() {
         let fields = extract_kaku_assistant_fields(
-            "enabled = true\nprovider = \"MiniMax\"\napi_key = \"sk-test\"\nmodel = \"MiniMax-M2.7\"\nbase_url = \"https://api.minimax.io/v1\"\n",
+            "enabled = true\napi_key = \"sk-test\"\nmodel = \"gpt-5.4-mini\"\nbase_url = \"https://api.openai.com/v1\"\n",
         );
         let provider = fields
             .iter()
             .find(|f| f.key == "Provider")
             .expect("Provider field");
-        assert_eq!(provider.value, "MiniMax");
-        assert!(provider.options.contains(&"MiniMax".to_string()));
-        assert!(provider.options.contains(&"VivGrid".to_string()));
+        assert_eq!(provider.value, "OpenAI");
+        assert!(provider.options.contains(&"OpenAI".to_string()));
         assert!(provider.options.contains(&"Custom".to_string()));
 
         let model = fields
             .iter()
             .find(|f| f.key == "Model")
             .expect("Model field");
-        assert_eq!(model.value, "MiniMax-M2.7");
-        assert!(model.options.contains(&"MiniMax-M2.7".to_string()));
-        assert!(model
-            .options
-            .contains(&"MiniMax-M2.7-highspeed".to_string()));
+        assert_eq!(model.value, "gpt-5.4-mini");
     }
 
     #[test]
     fn kaku_assistant_auto_detects_provider_from_base_url() {
         let fields = extract_kaku_assistant_fields(
-            "enabled = true\nmodel = \"MiniMax-M2.7\"\nbase_url = \"https://api.minimax.io/v1\"\n",
+            "enabled = true\nmodel = \"gpt-5.4-mini\"\nbase_url = \"https://api.openai.com/v1\"\n",
         );
         let provider = fields
             .iter()
             .find(|f| f.key == "Provider")
             .expect("Provider field");
-        assert_eq!(provider.value, "MiniMax");
+        assert_eq!(provider.value, "OpenAI");
     }
 
     #[test]
-    fn kaku_assistant_provider_defaults_to_vivgrid() {
+    fn kaku_assistant_provider_defaults_to_openai() {
         let fields = extract_kaku_assistant_fields("enabled = true\n");
         let provider = fields
             .iter()
             .find(|f| f.key == "Provider")
             .expect("Provider field");
-        assert_eq!(provider.value, "VivGrid");
+        assert_eq!(provider.value, "OpenAI");
     }
 
     #[test]
@@ -6370,34 +6365,33 @@ provider = "managed:kimi-code"
         let path = dir.path().join("assistant.toml");
         std::fs::write(
             &path,
-            "enabled = true\nprovider = \"VivGrid\"\nmodel = \"DeepSeek-V3.2\"\nbase_url = \"https://api.vivgrid.com/v1\"\n",
+            "enabled = true\nmodel = \"gpt-5.4-mini\"\nbase_url = \"https://api.openai.com/v1\"\n",
         )
         .expect("write temp config");
 
-        // Parse, change provider to MiniMax, and write
+        // Parse, change to Custom provider, and write
         let raw = std::fs::read_to_string(&path).expect("read");
         let cfg = parse_kaku_assistant_config(&raw);
-        let preset = assistant_config::provider_preset("MiniMax").expect("MiniMax preset");
         let updated = KakuAssistantConfig::new(
             cfg.is_enabled(),
             cfg.api_key(),
-            preset.models[0],
-            preset.base_url,
+            "my-model",
+            "https://my-proxy.example.com/v1",
         )
-        .with_provider("MiniMax")
+        .with_provider("Custom")
         .with_custom_headers(cfg.custom_headers().to_vec());
         write_kaku_assistant_config(&path, &updated).expect("write config");
 
         let saved = std::fs::read_to_string(&path).expect("read saved");
-        assert!(saved.contains("model = \"MiniMax-M2.7\""));
-        assert!(saved.contains("base_url = \"https://api.minimax.io/v1\""));
+        assert!(saved.contains("model = \"my-model\""));
+        assert!(saved.contains("base_url = \"https://my-proxy.example.com/v1\""));
     }
 
     #[test]
     fn kaku_assistant_provider_round_trip_preserves_headers() {
-        let raw = "enabled = true\nprovider = \"MiniMax\"\napi_key = \"sk-test\"\nmodel = \"MiniMax-M2.7\"\nbase_url = \"https://api.minimax.io/v1\"\ncustom_headers = [\"X-Foo: bar\"]\n";
+        let raw = "enabled = true\napi_key = \"sk-test\"\nmodel = \"gpt-5.4-mini\"\nbase_url = \"https://api.openai.com/v1\"\ncustom_headers = [\"X-Foo: bar\"]\n";
         let cfg = parse_kaku_assistant_config(raw);
-        assert_eq!(cfg.provider(), "MiniMax");
+        assert_eq!(cfg.provider(), "OpenAI");
         assert_eq!(cfg.custom_headers(), &["X-Foo: bar"]);
 
         let dir = tempdir().expect("tempdir");

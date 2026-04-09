@@ -14,7 +14,7 @@
 4. **Traffic Lights Position**: New `traffic_lights` option in Settings to customize the macOS window control button position.
 5. **Performance**: Tab title Lua callbacks are batched with a single Config serialization pass. kaku-remote screen capture is throttled to 60 fps.
 6. **Stability Fixes**: Fixed a crash on Option+Click, divide-by-zero in split pane sizing, and unwrap panic in mouse event handling.
-7. **Shell and Assistant**: Added MiniMax as a built-in provider preset. Fixed zsh-z update display and heredoc quoting edge cases.
+7. **Shell and Assistant**: Fixed zsh-z update display and heredoc quoting edge cases.
 
 ### 更新日志
 
@@ -24,7 +24,7 @@
 4. **Traffic Lights 位置**：设置中新增 `traffic_lights` 选项，可自定义 macOS 窗口控制按钮的位置。
 5. **性能优化**：Tab 标题 Lua 回调改为批量处理，单次序列化 Config；kaku-remote 屏幕捕获限速至 60fps。
 6. **稳定性修复**：修复 Option+Click 崩溃、分屏尺寸计算除零、鼠标事件 unwrap panic。
-7. **Shell 与 Assistant**：内置新增 MiniMax provider preset；修复 zsh-z 更新显示和 heredoc 引号边界问题。
+7. **Shell 与 Assistant**：修复 zsh-z 更新显示和 heredoc 引号边界问题。
 
 Special thanks to @fanweixiao and @LanternCX for their contributions to this release.
 

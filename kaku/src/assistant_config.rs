@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 
 /// Default AI model to use when none is specified.
 /// Default model for command analysis suggestions.
-pub const DEFAULT_MODEL: &str = "DeepSeek-V3.2";
+pub const DEFAULT_MODEL: &str = "gpt-5.4-mini";
 
 /// Default API base URL for the AI service.
-pub const DEFAULT_BASE_URL: &str = "https://api.vivgrid.com/v1";
+pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
 /// A provider preset with its API base URL and available models.
 pub struct ProviderPreset {
@@ -31,21 +31,6 @@ pub struct ProviderPreset {
 /// derive everything (base_url, model list, auto-fill on selection) from this
 /// table via provider_preset() and detect_provider(). No other changes needed.
 pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
-    ProviderPreset {
-        name: "VivGrid",
-        base_url: "https://api.vivgrid.com/v1",
-        models: &["DeepSeek-V3.2"],
-    },
-    ProviderPreset {
-        name: "MiniMax",
-        base_url: "https://api.minimax.io/v1",
-        models: &[
-            "MiniMax-M2.7",
-            "MiniMax-M2.7-highspeed",
-            "MiniMax-M2.5",
-            "MiniMax-M2.5-highspeed",
-        ],
-    },
     ProviderPreset {
         name: "OpenAI",
         base_url: "https://api.openai.com/v1",
@@ -182,7 +167,7 @@ pub fn default_assistant_toml_template() -> String {
 #\n\
 # enabled: true enables command analysis suggestions; false disables requests.\n\
 # api_key: provider API key, example: \"sk-xxxx\".\n\
-# model: model id, example: \"DeepSeek-V3.2\" or \"MiniMax-M2.7\".\n\
+# model: model id, example: \"deepseek-chat\" or \"gpt-4o\".\n\
 # base_url: chat-completions API root URL.\n\
 # custom_headers: optional extra HTTP headers for enterprise proxies or API gateways.\n\
 #                 format: [\"Header-Name: value\", \"Another-Header: value\"]\n\
@@ -352,10 +337,8 @@ mod tests {
 
     #[test]
     fn detect_provider_matches_known_urls() {
-        assert_eq!(detect_provider("https://api.minimax.io/v1"), "MiniMax");
-        assert_eq!(detect_provider("https://api.minimax.io/v1/"), "MiniMax");
-        assert_eq!(detect_provider("https://api.vivgrid.com/v1"), "VivGrid");
         assert_eq!(detect_provider("https://api.openai.com/v1"), "OpenAI");
+        assert_eq!(detect_provider("https://api.openai.com/v1/"), "OpenAI");
     }
 
     #[test]
@@ -366,10 +349,9 @@ mod tests {
 
     #[test]
     fn provider_preset_lookup_returns_correct_preset() {
-        let preset = provider_preset("MiniMax").expect("MiniMax preset");
-        assert_eq!(preset.base_url, "https://api.minimax.io/v1");
-        assert!(preset.models.contains(&"MiniMax-M2.7"));
-        assert!(preset.models.contains(&"MiniMax-M2.7-highspeed"));
+        let preset = provider_preset("OpenAI").expect("OpenAI preset");
+        assert_eq!(preset.base_url, "https://api.openai.com/v1");
+        assert!(preset.models.is_empty());
     }
 
     #[test]
@@ -380,8 +362,6 @@ mod tests {
     #[test]
     fn provider_names_includes_all_presets() {
         let names = provider_names();
-        assert!(names.contains(&"VivGrid".to_string()));
-        assert!(names.contains(&"MiniMax".to_string()));
         assert!(names.contains(&"OpenAI".to_string()));
         assert!(names.contains(&"Custom".to_string()));
     }

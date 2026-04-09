@@ -10,8 +10,7 @@ Run `kaku ai` to open the AI settings panel. Enable Kaku Assistant, pick a provi
 
 | Provider | Base URL | Models |
 | :--- | :--- | :--- |
-| OpenAI | `https://api.openai.com/v1` | gpt-5.4-mini (recommended), gpt-5.4, (free text) |
-| MiniMax | `https://api.minimax.io/v1` | MiniMax-M2.7, M2.7-highspeed, M2.5, M2.5-highspeed |
+| OpenAI | `https://api.openai.com/v1` | (free text) |
 | Custom | (manual) | (free text) |
 
 Selecting a provider auto-fills the base URL and populates the model dropdown.

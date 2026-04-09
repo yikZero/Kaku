@@ -67,11 +67,8 @@ Kaku Assistant supports built-in provider presets for quick setup. Select a prov
 
 | Provider | Base URL | Models |
 | :--- | :--- | :--- |
-| OpenAI | `https://api.openai.com/v1` | gpt-5.4-mini (recommended), gpt-5.4, (auto-detected) |
-| [MiniMax](https://www.minimax.io) | `https://api.minimax.io/v1` | MiniMax-M2.7, M2.7-highspeed, M2.5, M2.5-highspeed |
+| OpenAI | `https://api.openai.com/v1` | (free text) |
 | Custom | (manual) | (manual) |
-
-To use MiniMax, select "MiniMax" as the provider, enter your API key from [MiniMax Platform](https://platform.minimax.chat), and choose a model. MiniMax-M2.7 (1M context) is recommended for everyday AI coding tasks.
 
 When Kaku Assistant has a suggestion ready after a command error, press `Cmd + Shift + E` to apply it.
 
