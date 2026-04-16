@@ -1116,9 +1116,7 @@ impl ConfigInner {
 
                         fn extract_path(
                             event: notify::Event,
-                            watched_files: &std::sync::Mutex<
-                                std::collections::HashSet<PathBuf>,
-                            >,
+                            watched_files: &std::sync::Mutex<std::collections::HashSet<PathBuf>>,
                         ) -> Vec<PathBuf> {
                             let paths = match event.kind {
                                 EventKind::Modify(_)
@@ -1146,8 +1144,7 @@ impl ConfigInner {
                                         std::thread::sleep(DELAY);
                                         // Drain any other immediately ready events
                                         while let Ok(Ok(event)) = rx.try_recv() {
-                                            paths
-                                                .append(&mut extract_path(event, &watched_files));
+                                            paths.append(&mut extract_path(event, &watched_files));
                                         }
                                         paths.sort();
                                         paths.dedup();
@@ -1366,7 +1363,7 @@ impl ConfigInner {
                 }
             }
         } else {
-            // Config reload disabled — drop all watchers
+            // Config reload disabled; drop all watchers
             let empty = std::collections::HashSet::new();
             self.unwatch_stale_paths(&empty);
         }
