@@ -301,9 +301,46 @@ const MAX_HISTORY_PAIRS: usize = 10;
 /// unbounded RAM. Only chat messages count; tool events are included.
 const MAX_DISPLAY_MESSAGES: usize = 300;
 
-const SPINNER_FRAMES: &[&str] = &["◌", "◎", "◉", "●", "◉", "◎"];
-/// Milliseconds between spinner frame advances.
-const SPINNER_INTERVAL_MS: u128 = 50;
+/// Star-shape twinkle (mirrors Pake's packaging spinner): the lit points shift
+/// between different star glyphs each frame, producing a flicker rather than a
+/// rotation.
+/// Maximum number of (input, cursor) snapshots retained for Cmd+Z on the
+/// input line. A single-line prompt rarely needs more; once the cap is hit
+/// the oldest snapshot is dropped to keep memory bounded.
+const INPUT_UNDO_MAX: usize = 32;
+
+#[derive(Clone)]
+pub(crate) struct InputSnapshot {
+    input: String,
+    cursor: usize,
+}
+
+/// Push `(input, cursor)` onto `stack` iff the input is non-empty. When the
+/// stack reaches `INPUT_UNDO_MAX` the oldest entry is dropped FIFO so the
+/// memory stays bounded while still retaining the most recent edits.
+fn push_input_snapshot(stack: &mut Vec<InputSnapshot>, input: &str, cursor: usize) {
+    if input.is_empty() {
+        return;
+    }
+    if stack.len() >= INPUT_UNDO_MAX {
+        stack.remove(0);
+    }
+    stack.push(InputSnapshot {
+        input: input.to_string(),
+        cursor,
+    });
+}
+
+const SPINNER_FRAMES: &[&str] = &["✦", "✶", "✺", "✵", "✸", "✹", "✺"];
+/// Input-row spinner uses solid half-circles that rotate visibly at a larger
+/// visual weight than the delicate star glyphs in the header. 4 frames give
+/// a crisp clockwise rotation; each glyph is single-cell so the prompt width
+/// stays stable across frames. (Memory: `feedback_spinner_frames` warns
+/// against mixing wide glyphs like ⬤ into a narrow series.)
+const SPINNER_FRAMES_INPUT: &[&str] = &["◐", "◓", "◑", "◒"];
+/// 80ms per frame (same as Pake's bin/utils/info.ts): fast enough to read as
+/// "active", slow enough that each glyph is legible.
+const SPINNER_INTERVAL_MS: u128 = 80;
 
 /// UI mode: normal chat or conversation picker.
 pub(crate) enum AppMode {
@@ -378,6 +415,16 @@ pub(crate) struct App {
     pub(crate) onboarding_pending: bool,
     /// User pressed Enter while streaming; auto-submit input when stream ends.
     pub(crate) queued_submit: bool,
+    /// Whether the user has clicked the input row during the current streaming
+    /// response. While streaming, the input cursor is hidden until this becomes
+    /// true so the visual focus stays on the AI output; a deliberate click
+    /// signals intent to stage the next message. Reset on every new submit.
+    pub(crate) input_clicked_this_stream: bool,
+    /// Undo stack for destructive edits on the input line. Pushed before
+    /// Cmd+Backspace, Ctrl+U, Alt+Backspace, Paste, and slash/attachment
+    /// token replacements. Plain typing and single-char Backspace do not
+    /// push, so every Cmd+Z restores something meaningful.
+    pub(crate) input_undo_stack: Vec<InputSnapshot>,
 }
 
 impl App {
@@ -497,6 +544,8 @@ impl App {
             spinner_tick: Instant::now(),
             onboarding_pending,
             queued_submit: false,
+            input_clicked_this_stream: false,
+            input_undo_stack: Vec::new(),
         }
     }
 
@@ -504,22 +553,47 @@ impl App {
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
     }
 
-    fn try_advance_spinner(&mut self) -> bool {
-        if self.spinner_tick.elapsed().as_millis() >= SPINNER_INTERVAL_MS {
-            self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
-            self.spinner_tick = Instant::now();
+    fn spinner_char_input(&self) -> &'static str {
+        SPINNER_FRAMES_INPUT[self.spinner_frame % SPINNER_FRAMES_INPUT.len()]
+    }
+
+    /// Push the current (input, cursor) onto the undo stack before a
+    /// destructive edit. Empty inputs are skipped to avoid polluting the
+    /// stack with no-op restorations; when the cap is reached the oldest
+    /// snapshot is dropped FIFO.
+    fn snapshot_input_for_undo(&mut self) {
+        push_input_snapshot(&mut self.input_undo_stack, &self.input, self.input_cursor);
+    }
+
+    /// Pop the most recent snapshot and restore it. Returns true when
+    /// anything was restored; false when the stack was empty.
+    fn undo_input(&mut self) -> bool {
+        if let Some(snap) = self.input_undo_stack.pop() {
+            self.input = snap.input;
+            self.input_cursor = snap.cursor;
+            self.attachment_picker_index = 0;
+            self.display_lines_dirty = true;
             true
         } else {
             false
         }
     }
 
-    fn has_pending_tool(&self) -> bool {
-        self.messages
-            .iter()
-            .rev()
-            .take(16)
-            .any(|m| m.is_tool() && !m.complete)
+    /// Advance the spinner phase when at least one full frame interval has
+    /// elapsed. The tick baseline is advanced by whole-frame multiples
+    /// (not reset to `now()`), so jitter in the event-loop poll timeout
+    /// cannot accumulate into drift -- the next frame always lands on the
+    /// correct 80ms boundary. Returns true when the visible frame changed.
+    fn try_advance_spinner(&mut self) -> bool {
+        let elapsed = self.spinner_tick.elapsed().as_millis();
+        if elapsed < SPINNER_INTERVAL_MS {
+            return false;
+        }
+        let frames_to_advance = (elapsed / SPINNER_INTERVAL_MS) as usize;
+        self.spinner_frame = self.spinner_frame.wrapping_add(frames_to_advance);
+        self.spinner_tick +=
+            Duration::from_millis((frames_to_advance as u64) * (SPINNER_INTERVAL_MS as u64));
+        true
     }
 
     fn current_model(&self) -> String {
@@ -617,6 +691,10 @@ impl App {
     }
 
     fn replace_token(&mut self, start: usize, end: usize, replacement: &str) {
+        // Attachment / slash token expansion can swap a short prefix like
+        // "/att" for the full command body, which users occasionally want to
+        // reverse. Snapshot before mutating.
+        self.snapshot_input_for_undo();
         let byte_start = char_to_byte_pos(&self.input, start);
         let byte_end = char_to_byte_pos(&self.input, end);
         self.input.replace_range(byte_start..byte_end, replacement);
@@ -1250,6 +1328,7 @@ impl App {
         }
         self.messages.push(Message::user_text(text, attachments));
         self.is_streaming = true;
+        self.input_clicked_this_stream = false;
         self.display_lines_dirty = true;
         self.grapheme_queue.clear();
         self.stream_pending_done = false;
@@ -1665,12 +1744,12 @@ pub(crate) struct ToolRef {
 }
 
 /// Format the tool-call suffix appended to an AI header row.
-/// Returns "  ✓ fs_list /path  ⚙ shell" (leading spaces, no trailing newline).
-fn format_tool_suffix(tools: &[ToolRef], spinner: &str) -> String {
+/// Returns "  ✓ fs_list /path  ● shell" (leading spaces, no trailing newline).
+fn format_tool_suffix(tools: &[ToolRef]) -> String {
     let mut s = String::new();
     for t in tools {
         let icon = if !t.complete {
-            spinner // animated while running; static ✓/✗ after completion
+            "●"
         } else if t.failed {
             "✗"
         } else {
@@ -1827,11 +1906,11 @@ fn build_line_runs(
                 // Render tool status in a dimmer tone so the "AI" header still pops.
                 // If the full tool list overflows one line, show only the latest tool
                 // so the user always sees the current operation without truncation.
-                let suffix = format_tool_suffix(tools, spinner_char);
+                let suffix = format_tool_suffix(tools);
                 let avail = content_width.saturating_sub(4); // 4 = "  AI"
                 let suffix = if unicode_column_width(&suffix, None) > avail {
                     // Safe: guarded by `!tools.is_empty()` above.
-                    format_tool_suffix(std::slice::from_ref(tools.last().unwrap()), spinner_char)
+                    format_tool_suffix(std::slice::from_ref(tools.last().unwrap()))
                 } else {
                     suffix
                 };
@@ -2208,9 +2287,9 @@ fn render_chat(term: &mut TermWizTerminal, app: &App) -> termwiz::Result<()> {
         // sees the response is still in progress. If a follow-up message is
         // queued (Enter pressed during streaming), add a ↵ glyph to signal it.
         let prompt = if app.queued_submit {
-            format!("  {} ↵ ", app.spinner_char())
+            format!("  {} ↵ ", app.spinner_char_input())
         } else if app.is_streaming {
-            format!("  {} ", app.spinner_char())
+            format!("  {} ", app.spinner_char_input())
         } else {
             "  > ".to_string()
         };
@@ -2221,13 +2300,19 @@ fn render_chat(term: &mut TermWizTerminal, app: &App) -> termwiz::Result<()> {
         changes.push(Change::AllAttributes(pal.border_dim_cell()));
         changes.push(Change::Text("│".to_string()));
 
-        // Always show the cursor so users can see where staged input will land.
-        let cursor_byte = char_to_byte_pos(&app.input, app.input_cursor);
-        let cursor_col = (1
-            + unicode_column_width(&prompt, None)
-            + unicode_column_width(&app.input[..cursor_byte], None))
-        .min(cols.saturating_sub(2));
-        Some((cursor_col, input_row))
+        // Hide the input cursor during streaming until the user deliberately
+        // clicks the input row. Keeps visual focus on the AI response and
+        // avoids a blinking cursor next to the spinner that reads as noise.
+        if app.is_streaming && !app.input_clicked_this_stream {
+            None
+        } else {
+            let cursor_byte = char_to_byte_pos(&app.input, app.input_cursor);
+            let cursor_col = (1
+                + unicode_column_width(&prompt, None)
+                + unicode_column_width(&app.input[..cursor_byte], None))
+            .min(cols.saturating_sub(2));
+            Some((cursor_col, input_row))
+        }
     };
 
     // 6. Bottom border.
@@ -2481,6 +2566,7 @@ fn handle_key(key: &KeyEvent, app: &mut App) -> Action {
 
         // Cmd+Backspace: clear the entire input line (macOS-native shortcut).
         (KeyCode::Backspace, Modifiers::SUPER) => {
+            app.snapshot_input_for_undo();
             app.input.clear();
             app.input_cursor = 0;
             app.attachment_picker_index = 0;
@@ -2490,6 +2576,7 @@ fn handle_key(key: &KeyEvent, app: &mut App) -> Action {
         // Option+Backspace: delete the previous word (macOS-native shortcut).
         (KeyCode::Backspace, Modifiers::ALT) => {
             if app.input_cursor > 0 {
+                app.snapshot_input_for_undo();
                 let target = prev_word_pos(&app.input, app.input_cursor);
                 let from_byte = char_to_byte_pos(&app.input, target);
                 let to_byte = char_to_byte_pos(&app.input, app.input_cursor);
@@ -2514,9 +2601,16 @@ fn handle_key(key: &KeyEvent, app: &mut App) -> Action {
 
         // Clear line
         (KeyCode::Char('U'), Modifiers::CTRL) => {
+            app.snapshot_input_for_undo();
             app.input.clear();
             app.input_cursor = 0;
             app.attachment_picker_index = 0;
+            Action::Continue
+        }
+
+        // Undo the last destructive input edit (macOS-native Cmd+Z).
+        (KeyCode::Char('z'), Modifiers::SUPER) | (KeyCode::Char('Z'), Modifiers::SUPER) => {
+            app.undo_input();
             Action::Continue
         }
 
@@ -2751,6 +2845,8 @@ fn handle_mouse(event: &MouseEvent, app: &mut App) {
     let was_pressed = app.left_was_pressed;
     app.left_was_pressed = is_pressed;
 
+    let input_row = app.rows.saturating_sub(2);
+
     match (was_pressed, is_pressed) {
         (false, true) => {
             // Press edge: start a new potential selection, clear the old one.
@@ -2761,6 +2857,11 @@ fn handle_mouse(event: &MouseEvent, app: &mut App) {
             } else {
                 None
             };
+            // A click on the input row during streaming reveals the cursor
+            // so the user can stage the next message.
+            if my == input_row && app.is_streaming {
+                app.input_clicked_this_stream = true;
+            }
         }
         (true, true) => {
             // Drag: extend the selection if the cursor has actually moved from the anchor.
@@ -2889,6 +2990,10 @@ pub fn ai_chat_overlay(
                 // ForwardWriter in TermWizTerminalPane, which converts bytes
                 // written to pane.writer() into InputEvent::Paste events.
                 // Allowed during streaming so the user can stage the next message.
+                let has_insertable = text.chars().any(|c| !c.is_control());
+                if has_insertable {
+                    app.snapshot_input_for_undo();
+                }
                 for c in text.chars() {
                     if !c.is_control() {
                         let byte_pos = char_to_byte_pos(&app.input, app.input_cursor);
@@ -2915,10 +3020,6 @@ pub fn ai_chat_overlay(
                 let spinner_changed = (app.is_streaming
                     || matches!(app.model_fetch, ModelFetch::Loading))
                     && app.try_advance_spinner();
-                if spinner_changed && app.has_pending_tool() {
-                    // Tool suffix in the header uses the spinner char; must rebuild.
-                    app.display_lines_dirty = true;
-                }
                 if app.is_streaming
                     || !app.grapheme_queue.is_empty()
                     || app.stream_pending_done
@@ -3056,7 +3157,7 @@ fn extract_selection_text(app: &App) -> Option<String> {
                 tools,
             } => {
                 let mut s = "  AI".to_string();
-                s.push_str(&format_tool_suffix(tools, "⚙"));
+                s.push_str(&format_tool_suffix(tools));
                 (s, "  ")
             }
             DisplayLine::AttachmentSummary { labels } => {
@@ -3540,6 +3641,96 @@ mod markdown_tests {
             "make",
             "make test",
             "echo hello",
+            // system info (read-only)
+            "date",
+            "date +%Y-%m-%d",
+            "uname -a",
+            "hostname",
+            "whoami",
+            "id",
+            "groups",
+            "uptime",
+            "df -h",
+            "du -sh .",
+            "ps aux",
+            "lsof -i :8080",
+            "printenv PATH",
+            // data processing (read-only)
+            "jq .name package.json",
+            "base64 Cargo.toml",
+            "md5 Cargo.toml",
+            "shasum Cargo.toml",
+            "sha256sum Cargo.toml",
+            "diff a.txt b.txt",
+            "cmp a.bin b.bin",
+            "printf 'hi\\n'",
+            "seq 1 10",
+            "od -c Cargo.toml",
+            "hexdump -C Cargo.toml",
+            "strings /bin/ls",
+            "rev Cargo.toml",
+            "tac Cargo.toml",
+            // network queries (read-only)
+            "dig example.com",
+            "nslookup example.com",
+            "host example.com",
+            "ping -c 1 example.com",
+            // curl: GET is default; no write flags
+            "curl https://api.github.com/repos/tw93/Kaku",
+            "curl -s https://api.github.com/repos/tw93/Kaku",
+            "curl -sL https://api.github.com/repos/tw93/Kaku/issues",
+            "curl -X GET https://api.github.com/repos/tw93/Kaku",
+            "curl --request=GET https://api.github.com/repos/tw93/Kaku",
+            "curl -I https://example.com",
+            "curl -X HEAD https://example.com",
+            // git extended read-only subcommands
+            "git blame src/main.rs",
+            "git reflog",
+            "git shortlog -sn",
+            "git describe --tags",
+            "git merge-base main HEAD",
+            "git ls-tree HEAD",
+            "git cat-file -p HEAD",
+            "git rev-list --count HEAD",
+            "git name-rev HEAD",
+            "git check-ignore -v foo.log",
+            "git check-attr --all README.md",
+            "git for-each-ref refs/heads",
+            "git whatchanged -5",
+            "git count-objects -v",
+            "git worktree list",
+            "git stash show",
+            "git config --get user.email",
+            "git config --list",
+            "git config -l",
+            "git config --get-all remote.origin.fetch",
+            // gh extension read-only
+            "gh extension list",
+            "gh extension view gh-copilot",
+            // brew read-only
+            "brew list",
+            "brew ls",
+            "brew info wget",
+            "brew search wget",
+            "brew outdated",
+            "brew home git",
+            "brew doctor",
+            "brew deps --tree wget",
+            "brew leaves",
+            "brew --prefix",
+            "brew --cellar",
+            "brew --cache",
+            "brew --version",
+            // misc shell/binary helpers
+            "true",
+            "false",
+            "sleep 1",
+            "tty",
+            "locale",
+            "nm -D /usr/bin/true",
+            "otool -L /usr/bin/true",
+            "addr2line -e /usr/bin/true 0x1000",
+            "objdump -d /usr/bin/true",
             // syntax-check only interpreters (read-only)
             "perl -c script.pl",
             "ruby -c script.rb",
@@ -3550,6 +3741,25 @@ mod markdown_tests {
             "rg TODO src | sort | uniq",
             "git diff HEAD~1 | head -20",
             "find . -name '*.rs' | wc -l",
+            // `cd` is a harmless no-op in a one-shot shell_exec, but the common
+            // `cd dir && <read-only cmd>` pattern must pass without prompting.
+            "cd /tmp",
+            "cd ~/www/Kaku",
+            "cd ~/www/Kaku && grep -irA 5 -B 5 correction kaku-gui/src",
+            "cd /tmp && ls -la",
+            "cd ~/www/Kaku && pwd && ls",
+            // `&&`, `||`, `;` chaining of read-only segments is safe
+            "pwd && ls",
+            "ls || echo nope",
+            "ls; pwd",
+            "pwd && ls && whoami",
+            "cat Cargo.toml | grep name && pwd",
+            // Safe redirections: stderr silenced, fd duplication, stdin read
+            "ls -la ~/www/kaku 2>/dev/null",
+            "ls 2> /dev/null",
+            "cat foo 2>&1 | grep bar",
+            "cat < input.txt",
+            "ls -la ~/www/kaku 2>/dev/null || echo \"Not found\"",
         ] {
             assert!(
                 approval_summary("shell_exec", &serde_json::json!({ "command": command }))
@@ -3633,10 +3843,46 @@ mod markdown_tests {
             // package managers (install/modify dependencies)
             "npm install",
             "npm run build",
-            // pipeline hazards (already handled by split_shell_pipeline)
-            "ls || wc",
+            // git mutating worktree / stash / config
+            "git worktree add ../new main",
+            "git worktree remove ../old",
+            "git stash push -m foo",
+            "git stash pop",
+            "git stash drop",
+            "git config user.email foo@bar.com",
+            "git config --unset user.email",
+            // brew mutating operations
+            "brew install wget",
+            "brew uninstall wget",
+            "brew upgrade",
+            "brew cleanup",
+            "brew tap homebrew/cask",
+            "brew link wget",
+            // curl with write flags or non-GET method
+            "curl -o out.html https://example.com",
+            "curl --output out.html https://example.com",
+            "curl -O https://example.com/file.zip",
+            "curl --remote-name https://example.com/file.zip",
+            "curl -T upload.bin https://example.com/api",
+            "curl -d 'a=1' https://example.com/api",
+            "curl --data 'a=1' https://example.com/api",
+            "curl -F file=@x.txt https://example.com/api",
+            "curl -X POST https://example.com/api",
+            "curl -X DELETE https://example.com/api/123",
+            "curl --request=POST https://example.com/api",
+            "curl -sO https://example.com/file.zip",
+            "curl -so out.html https://example.com",
+            "curl -sX POST https://example.com/api",
+            // shell hazards: output redirections, backgrounding, command substitution
             "cat a > b",
-            "pwd && ls",
+            "echo hi >> log.txt",
+            "sleep 100 &",
+            "echo `whoami`",
+            "echo $(pwd)",
+            // chain containing any dangerous segment still requires approval
+            "ls && rm -rf /tmp/x",
+            "cd /tmp && touch foo",
+            "pwd; git push",
         ] {
             assert!(
                 approval_summary("shell_exec", &serde_json::json!({ "command": command }))
@@ -3672,5 +3918,52 @@ mod markdown_tests {
         assert!(content.contains("TERM| ```"));
         assert!(content.contains("TERM| sudo rm -rf /"));
         assert!(!content.contains("```terminal"));
+    }
+}
+
+#[cfg(test)]
+mod undo_tests {
+    use super::{push_input_snapshot, InputSnapshot, INPUT_UNDO_MAX};
+
+    #[test]
+    fn empty_input_skipped() {
+        let mut stack: Vec<InputSnapshot> = Vec::new();
+        push_input_snapshot(&mut stack, "", 0);
+        assert!(stack.is_empty(), "empty input should not snapshot");
+    }
+
+    #[test]
+    fn push_records_input_and_cursor() {
+        let mut stack = Vec::new();
+        push_input_snapshot(&mut stack, "hello", 3);
+        assert_eq!(stack.len(), 1);
+        assert_eq!(stack[0].input, "hello");
+        assert_eq!(stack[0].cursor, 3);
+    }
+
+    #[test]
+    fn fifo_evicts_oldest_when_cap_reached() {
+        let mut stack = Vec::new();
+        for i in 0..INPUT_UNDO_MAX {
+            push_input_snapshot(&mut stack, &format!("v{i}"), i);
+        }
+        assert_eq!(stack.len(), INPUT_UNDO_MAX);
+        assert_eq!(stack[0].input, "v0");
+        push_input_snapshot(&mut stack, "overflow", 0);
+        assert_eq!(stack.len(), INPUT_UNDO_MAX);
+        assert_eq!(stack[0].input, "v1", "oldest should be dropped");
+        assert_eq!(stack.last().unwrap().input, "overflow");
+    }
+
+    #[test]
+    fn pop_returns_last_pushed() {
+        let mut stack = Vec::new();
+        push_input_snapshot(&mut stack, "a", 1);
+        push_input_snapshot(&mut stack, "ab", 2);
+        let snap = stack.pop().expect("non-empty");
+        assert_eq!(snap.input, "ab");
+        assert_eq!(snap.cursor, 2);
+        let snap = stack.pop().expect("non-empty");
+        assert_eq!(snap.input, "a");
     }
 }

@@ -127,7 +127,7 @@ pub(crate) fn run_agent(
                 .or_else(|| args.get("command"))
                 .or_else(|| args.as_object().and_then(|o| o.values().next()))
                 .and_then(|v| v.as_str())
-                .map(|s| s.chars().take(40).collect::<String>())
+                .map(|s| s.chars().take(120).collect::<String>())
                 .unwrap_or_default();
             // All state-mutating tools require user approval before running.
             if let Some(summary) = approval_summary(&tc.name, &args) {
@@ -152,7 +152,7 @@ pub(crate) fn run_agent(
                 args_preview,
             });
 
-            match ai_tools::execute(&tc.name, &args, &mut cwd, client.config()) {
+            match ai_tools::execute(&tc.name, &args, &mut cwd, client.config(), &cancel) {
                 Ok(result) => {
                     let _ = tx.send(StreamMsg::ToolDone {
                         result_preview: String::new(),

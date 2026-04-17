@@ -74,9 +74,9 @@ fn shell_command_requires_approval(command: &str) -> bool {
     if trimmed.is_empty() {
         return true;
     }
-    let segments = match split_shell_pipeline(trimmed) {
+    let segments = match split_shell_segments(trimmed) {
         Some(segments) => segments,
-        None => return true, // redirections, chaining, subshells, etc.
+        None => return true, // redirections, subshells, backgrounding, etc.
     };
 
     // Require approval only if any segment contains a dangerous operation.
@@ -89,12 +89,30 @@ fn shell_command_requires_approval(command: &str) -> bool {
     })
 }
 
-fn split_shell_pipeline(command: &str) -> Option<Vec<String>> {
+/// Splits a shell command on sequencing operators so each segment can be
+/// classified independently:
+///   - `|` pipeline
+///   - `&&` and `||` conditional chaining
+///   - `;` sequential
+/// Returns `None` for anything that could write a file or run arbitrary code
+/// outside a segment boundary: redirections (`>`, `<`), background (`&`),
+/// command substitution (`` ` ``, `$(`), or unbalanced quotes.
+fn split_shell_segments(command: &str) -> Option<Vec<String>> {
     let mut segments = Vec::new();
     let mut current = String::new();
     let mut chars = command.chars().peekable();
     let mut in_single = false;
     let mut in_double = false;
+
+    let flush = |current: &mut String, segments: &mut Vec<String>| -> Option<()> {
+        let seg = current.trim();
+        if seg.is_empty() {
+            return None;
+        }
+        segments.push(seg.to_string());
+        current.clear();
+        Some(())
+    };
 
     while let Some(ch) = chars.next() {
         if matches!(ch, '\n' | '\r' | '`') {
@@ -123,17 +141,32 @@ fn split_shell_pipeline(command: &str) -> Option<Vec<String>> {
                 in_double = !in_double;
                 current.push(ch);
             }
-            ';' | '&' | '>' | '<' if !in_single && !in_double => return None,
+            '<' if !in_single && !in_double => {
+                if !skip_safe_input_redirection(&mut chars) {
+                    return None;
+                }
+            }
+            '>' if !in_single && !in_double => {
+                if !skip_safe_output_redirection(&mut chars, &mut current) {
+                    return None;
+                }
+            }
+            ';' if !in_single && !in_double => {
+                flush(&mut current, &mut segments)?;
+            }
+            '&' if !in_single && !in_double => {
+                if matches!(chars.peek(), Some('&')) {
+                    chars.next();
+                    flush(&mut current, &mut segments)?;
+                } else {
+                    return None; // single `&` backgrounds the job
+                }
+            }
             '|' if !in_single && !in_double => {
                 if matches!(chars.peek(), Some('|')) {
-                    return None;
+                    chars.next();
                 }
-                let segment = current.trim();
-                if segment.is_empty() {
-                    return None;
-                }
-                segments.push(segment.to_string());
-                current.clear();
+                flush(&mut current, &mut segments)?;
             }
             _ => current.push(ch),
         }
@@ -143,12 +176,119 @@ fn split_shell_pipeline(command: &str) -> Option<Vec<String>> {
         return None;
     }
 
-    let segment = current.trim();
-    if segment.is_empty() {
-        return None;
-    }
-    segments.push(segment.to_string());
+    flush(&mut current, &mut segments)?;
     Some(segments)
+}
+
+/// After consuming `<`, skip an input redirection or report unsafe.
+/// Input redirection has no write side-effect, so the target is not
+/// constrained to an allowlist. Process substitution `<(...)` is rejected.
+fn skip_safe_input_redirection(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+) -> bool {
+    if chars.peek() == Some(&'(') {
+        return false;
+    }
+    consume_whitespace(chars);
+    consume_word(chars);
+    true
+}
+
+/// After consuming `>`, skip a safe output redirection or report unsafe.
+/// Safe forms: `>/dev/null`, `>>/dev/null`, `>&N` (fd duplication), `>&-`
+/// (close). Writes to any other file return false. The optional leading
+/// fd digit in `current` (e.g., the `2` in `cmd 2>/dev/null`) is stripped
+/// so the remaining command tokens parse cleanly via `shlex`.
+fn skip_safe_output_redirection(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    current: &mut String,
+) -> bool {
+    if chars.peek() == Some(&'(') {
+        return false;
+    }
+    // `>>` append form; still gated on target safety.
+    if chars.peek() == Some(&'>') {
+        chars.next();
+    }
+    strip_trailing_fd_digits(current);
+    consume_whitespace(chars);
+    if chars.peek() == Some(&'&') {
+        chars.next();
+        return match chars.peek() {
+            Some(c) if c.is_ascii_digit() => {
+                while chars.peek().map_or(false, |c| c.is_ascii_digit()) {
+                    chars.next();
+                }
+                true
+            }
+            Some('-') => {
+                chars.next();
+                true
+            }
+            _ => false,
+        };
+    }
+    let target = take_word(chars);
+    target == "/dev/null"
+}
+
+fn consume_whitespace(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while let Some(&c) = chars.peek() {
+        if c == ' ' || c == '\t' {
+            chars.next();
+        } else {
+            break;
+        }
+    }
+}
+
+fn consume_word(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while let Some(&c) = chars.peek() {
+        if matches!(
+            c,
+            ' ' | '\t' | '\n' | '\r' | '|' | '&' | ';' | '<' | '>' | '(' | ')'
+        ) {
+            break;
+        }
+        chars.next();
+    }
+}
+
+fn take_word(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut w = String::new();
+    while let Some(&c) = chars.peek() {
+        if matches!(
+            c,
+            ' ' | '\t' | '\n' | '\r' | '|' | '&' | ';' | '<' | '>' | '(' | ')'
+        ) {
+            break;
+        }
+        w.push(c);
+        chars.next();
+    }
+    w
+}
+
+/// Strip a trailing fd-digit specifier (e.g., `cmd 2` → `cmd`). The digits
+/// must be preceded by whitespace or start-of-string; otherwise they are
+/// part of a command argument and left in place.
+fn strip_trailing_fd_digits(current: &mut String) {
+    let n_digits = current
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .count();
+    if n_digits == 0 {
+        return;
+    }
+    let before_idx = current.len() - n_digits;
+    let char_before = current[..before_idx].chars().next_back();
+    if char_before.map_or(true, |c| c == ' ' || c == '\t') {
+        current.truncate(before_idx);
+        while current.ends_with(' ') || current.ends_with('\t') {
+            current.pop();
+        }
+    }
 }
 
 /// Returns true when a pipeline segment requires approval.
@@ -173,7 +313,28 @@ fn shell_tokens_are_dangerous(tokens: &[String]) -> bool {
         // Pure read-only informational commands: no filesystem writes possible.
         "pwd" | "ls" | "cat" | "head" | "tail" | "wc" | "rg" | "grep" | "which" | "whereis"
         | "cut" | "uniq" | "nl" | "stat" | "file" | "realpath" | "readlink" | "basename"
-        | "dirname" | "echo" | "tr" | "awk" => false,
+        | "dirname" | "echo" | "tr" | "awk"
+        // System info (read-only).
+        | "date" | "uname" | "hostname" | "whoami" | "id" | "groups"
+        | "uptime" | "w" | "who" | "last"
+        | "df" | "du" | "ps" | "lsof" | "free" | "vm_stat" | "printenv"
+        // Data processing (read-only; output to stdout).
+        | "jq" | "base64" | "md5" | "md5sum"
+        | "shasum" | "sha1sum" | "sha256sum" | "cksum"
+        | "strings" | "od" | "hexdump"
+        | "diff" | "cmp" | "printf" | "seq" | "yes"
+        | "column" | "comm" | "join" | "paste"
+        | "expand" | "unexpand" | "fold" | "fmt" | "rev" | "tac"
+        // Network queries (read-only).
+        | "dig" | "nslookup" | "host" | "ping"
+        // Shell helpers / no-op utilities (read-only).
+        | "cd" | "type" | "true" | "false" | "sleep" | "tty" | "locale"
+        // Binary inspection (read-only disassembly/symbols).
+        | "nm" | "otool" | "addr2line" | "c++filt" | "objdump" => false,
+
+        // curl: default method is GET (read-only). Dangerous when it writes to
+        // disk (-o/-O/-T) or switches to a body-producing method (-X POST, -d, -F).
+        "curl" => curl_is_dangerous(tokens),
 
         // sed: in-place edit (-i) modifies files; flag-less usage is a filter (safe).
         "sed" => tokens
@@ -196,6 +357,10 @@ fn shell_tokens_are_dangerous(tokens: &[String]) -> bool {
         // gh (GitHub CLI): only explicit read-only subcommands skip approval.
         // Mutating subcommands (create, comment, merge, close, edit, ...) still gate.
         "gh" => !gh_is_read_only(tokens),
+
+        // brew: only explicit read-only subcommands skip approval.
+        // install/uninstall/upgrade/link/cleanup/tap still gate.
+        "brew" => !brew_is_read_only(tokens),
 
         // perl/ruby: -c is a syntax-check (safe); -e runs inline code (dangerous).
         "perl" | "ruby" => !tokens.iter().skip(1).any(|t| t == "-c"),
@@ -230,6 +395,77 @@ fn rm_is_dangerous(tokens: &[String]) -> bool {
     })
 }
 
+/// curl defaults to GET (read-only). Require approval when it writes to disk
+/// (`-o`, `-O`, `-T`, `--output`, `--remote-name`, `--upload-file`), carries a
+/// request body (`-d`, `-F`, `--data*`, `--form*`), or overrides the method to
+/// anything other than GET/HEAD.
+fn curl_is_dangerous(tokens: &[String]) -> bool {
+    for (i, t) in tokens.iter().enumerate().skip(1) {
+        // Explicit method override: safe only for GET/HEAD.
+        if t == "-X" || t == "--request" {
+            match tokens.get(i + 1).map(String::as_str) {
+                Some(m) if m.eq_ignore_ascii_case("GET") || m.eq_ignore_ascii_case("HEAD") => {}
+                _ => return true,
+            }
+            continue;
+        }
+        if let Some(m) = t.strip_prefix("--request=") {
+            if !m.eq_ignore_ascii_case("GET") && !m.eq_ignore_ascii_case("HEAD") {
+                return true;
+            }
+            continue;
+        }
+
+        // Flags that write to local disk or send a request body.
+        if matches!(
+            t.as_str(),
+            "-o" | "--output"
+                | "-O"
+                | "--remote-name"
+                | "--remote-name-all"
+                | "-T"
+                | "--upload-file"
+                | "-d"
+                | "--data"
+                | "--data-raw"
+                | "--data-binary"
+                | "--data-urlencode"
+                | "--data-ascii"
+                | "-F"
+                | "--form"
+                | "--form-string"
+        ) {
+            return true;
+        }
+        if t.starts_with("--output=")
+            || t.starts_with("--upload-file=")
+            || t.starts_with("--data")
+            || t.starts_with("--form")
+        {
+            return true;
+        }
+
+        // Short-flag combos like `-sO file` or `-sd payload`: any of o/O/T/d/F
+        // in a single-dash bundle implies the same write/body semantics.
+        if t.starts_with('-') && !t.starts_with("--") && t.len() > 2 {
+            let flags = &t[1..];
+            if flags
+                .chars()
+                .any(|c| matches!(c, 'o' | 'O' | 'T' | 'd' | 'F'))
+            {
+                return true;
+            }
+            if flags.contains('X') {
+                match tokens.get(i + 1).map(String::as_str) {
+                    Some(m) if m.eq_ignore_ascii_case("GET") || m.eq_ignore_ascii_case("HEAD") => {}
+                    _ => return true,
+                }
+            }
+        }
+    }
+    false
+}
+
 fn find_is_dangerous(tokens: &[String]) -> bool {
     tokens.iter().skip(1).any(|t| {
         matches!(
@@ -256,7 +492,28 @@ fn git_is_read_only(tokens: &[String]) -> bool {
     }
     match tokens.get(1).map(String::as_str) {
         // Read-only inspection commands.
-        Some("status" | "diff" | "show" | "log" | "grep" | "ls-files" | "rev-parse") => true,
+        Some(
+            "status" | "diff" | "show" | "log" | "grep" | "ls-files" | "rev-parse" | "blame"
+            | "reflog" | "shortlog" | "describe" | "merge-base" | "ls-tree" | "cat-file"
+            | "rev-list" | "name-rev" | "check-ignore" | "check-attr" | "for-each-ref"
+            | "whatchanged" | "count-objects" | "var",
+        ) => true,
+        // worktree: list is read-only; add/remove/move/prune modify state.
+        Some("worktree") => tokens.get(2).map(String::as_str) == Some("list"),
+        // config: --get / --list variants are read-only; anything else may write.
+        Some("config") => tokens.iter().skip(2).any(|t| {
+            matches!(
+                t.as_str(),
+                "--get"
+                    | "--get-all"
+                    | "--get-regexp"
+                    | "--get-urlmatch"
+                    | "--list"
+                    | "-l"
+                    | "--show-origin"
+                    | "--show-scope"
+            )
+        }),
         // branch/tag/remote/stash: read-only only when listing (no positional args after flags).
         Some("branch") => {
             // git branch (no args) or git branch -a/-l/--list [pattern] is read-only.
@@ -299,7 +556,12 @@ fn git_is_read_only(tokens: &[String]) -> bool {
                 .any(|t| t == "add" || t == "remove" || t == "rename" || t == "set-url")
                 && !tokens.iter().skip(2).any(|t| !t.starts_with('-'))
         }
-        Some("stash") => tokens.get(2).map(String::as_str) == Some("list"),
+        Some("stash") => {
+            matches!(
+                tokens.get(2).map(String::as_str),
+                Some("list") | Some("show")
+            )
+        }
         // Everything else (checkout, add, commit, push, reset, clean, etc.) modifies state.
         _ => false,
     }
@@ -322,7 +584,7 @@ fn gh_is_read_only(tokens: &[String]) -> bool {
         // Common nouns paired with read-only verbs.
         (
             "issue" | "pr" | "repo" | "release" | "label" | "workflow" | "run" | "gist" | "project"
-            | "ruleset" | "secret" | "variable" | "cache",
+            | "ruleset" | "secret" | "variable" | "cache" | "extension",
             Some("list" | "view" | "diff" | "checks" | "status" | "show"),
         ) => true,
         // `gh auth status` is read-only; auth login/logout/refresh mutate credentials.
@@ -334,6 +596,44 @@ fn gh_is_read_only(tokens: &[String]) -> bool {
         ("api", _) => gh_api_is_get(tokens),
         _ => false,
     }
+}
+
+/// Returns true if the brew command is read-only (no package mutations).
+/// Allows inspection subcommands (list/info/search/outdated/...) and the
+/// informational `--prefix` / `--cellar` / `--cache` / `--version` flags.
+fn brew_is_read_only(tokens: &[String]) -> bool {
+    let sub = match tokens.get(1).map(String::as_str) {
+        Some(s) => s,
+        None => return true, // bare `brew` prints help (read-only).
+    };
+    matches!(
+        sub,
+        "list"
+            | "ls"
+            | "info"
+            | "abv"
+            | "search"
+            | "outdated"
+            | "home"
+            | "homepage"
+            | "doctor"
+            | "dr"
+            | "deps"
+            | "uses"
+            | "leaves"
+            | "desc"
+            | "options"
+            | "config"
+            | "--cache"
+            | "--prefix"
+            | "--cellar"
+            | "--repository"
+            | "--repo"
+            | "--caskroom"
+            | "--version"
+            | "-v"
+            | "help"
+    )
 }
 
 /// `gh api` defaults to GET. Treat as read-only only if no -X/--method overrides
@@ -496,4 +796,67 @@ pub(crate) fn build_visible_snapshot_message(ctx: &TerminalContext) -> Option<Ap
          End of terminal snapshot.",
         snippet
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_command_requires_approval;
+
+    // Safe: stderr redirected to /dev/null, whole pipeline read-only.
+    #[test]
+    fn stderr_to_dev_null_no_approval() {
+        assert!(!shell_command_requires_approval(
+            "ls -la ~/www/kaku 2>/dev/null"
+        ));
+    }
+
+    // Safe: spaced variant must also pass.
+    #[test]
+    fn stderr_with_spaces_no_approval() {
+        assert!(!shell_command_requires_approval("ls 2> /dev/null"));
+    }
+
+    // Safe: fd duplication merges stderr into stdout.
+    #[test]
+    fn stderr_to_stdout_fd_dup_no_approval() {
+        assert!(!shell_command_requires_approval("cat foo 2>&1 | grep bar"));
+    }
+
+    // Safe: stdin input redirection never writes.
+    #[test]
+    fn stdin_input_no_approval() {
+        assert!(!shell_command_requires_approval("grep foo < input.txt"));
+    }
+
+    // Safe: original bug report case combines stderr-silencing with `||`.
+    #[test]
+    fn original_bug_report_no_approval() {
+        assert!(!shell_command_requires_approval(
+            "ls -la ~/www/kaku 2>/dev/null || echo \"Not found\""
+        ));
+    }
+
+    // Unsafe: real file write still gates.
+    #[test]
+    fn write_to_real_file_requires_approval() {
+        assert!(shell_command_requires_approval("echo hi > /tmp/foo"));
+    }
+
+    // Unsafe: append to real file still gates.
+    #[test]
+    fn append_to_real_file_requires_approval() {
+        assert!(shell_command_requires_approval("echo hi >> log.txt"));
+    }
+
+    // Unsafe: process substitution must stay blocked.
+    #[test]
+    fn process_substitution_requires_approval() {
+        assert!(shell_command_requires_approval("diff <(ls a) <(ls b)"));
+    }
+
+    // Unsafe: `>file` without fd prefix still gates.
+    #[test]
+    fn plain_write_redirect_requires_approval() {
+        assert!(shell_command_requires_approval("cat foo > bar"));
+    }
 }

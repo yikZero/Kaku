@@ -8,10 +8,20 @@ use anyhow::{Context, Result};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{BufRead, Read};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+/// SIGKILL the entire process group led by this child. Required because
+/// `Child::kill()` only signals the direct child (the login shell), which
+/// leaves any grandchild like `sleep 30` still running.
+fn kill_process_group(child: &std::process::Child) {
+    unsafe {
+        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+    }
+}
 
 // ─── Background process registry ─────────────────────────────────────────────
 
@@ -470,6 +480,12 @@ pub fn to_api_schema(tool: &ToolDef) -> serde_json::Value {
 /// Fallback output cap for tools not matched in `budget_for`.
 const DEFAULT_RESULT_BYTES: usize = 8_000;
 
+/// Hard wall-clock ceiling for a single `shell_exec` invocation. Anything
+/// slower should be launched via `shell_bg` + `shell_poll` instead; 60s is
+/// long enough for `cargo check` on a warm cache but stops a hung `grep -r`
+/// from blocking the whole agent loop indefinitely.
+const SHELL_EXEC_TIMEOUT_SECS: u64 = 60;
+
 /// Per-tool byte budgets for tool-call results.
 ///
 /// `detail` maps to the budget tier:
@@ -495,11 +511,15 @@ fn budget_for(tool: &str, detail: &str) -> usize {
 /// Execute a tool by name. `args` is the parsed JSON from the model.
 /// `cwd` is the agent's current working directory; shell_exec updates it in-place
 /// when the command changes directory (e.g. via `cd`).
+///
+/// `cancel` is polled by long-running tools (currently shell_exec) so Esc /
+/// session shutdown can interrupt a hung child process.
 pub fn execute(
     name: &str,
     args: &serde_json::Value,
     cwd: &mut String,
     config: &AssistantConfig,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<String> {
     // Per-tool byte cap, honoring any optional `detail` argument.
     let detail = args["detail"].as_str().unwrap_or("default");
@@ -669,6 +689,9 @@ pub fn execute(
                 .current_dir(&exec_cwd)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
+                // Put the child in its own process group so cancel/timeout can
+                // signal every descendant, not just the login shell.
+                .process_group(0)
                 .spawn()
                 .with_context(|| format!("shell exec failed ({})", shell))?;
 
@@ -685,18 +708,31 @@ pub fn execute(
                 pump_reader_capped(s, stderr_buf.clone(), bytes_total.clone(), streaming_cap)
             });
 
-            // Poll until the child exits naturally or output exceeds the cap.
-            // Do NOT kill the child on overflow: write operations (cargo build,
-            // npm install, git ...) must be allowed to finish. pump_reader_capped
-            // already drains the pipe without storing bytes past the cap, so the
-            // child never blocks on a full pipe buffer.
+            // Poll until the child exits, output exceeds the cap, the user
+            // cancels, or the hard timeout fires. Overflow does NOT kill the
+            // child: write operations (cargo build, npm install, git ...) must
+            // be allowed to finish; pump_reader_capped drains the pipe so the
+            // child never blocks on a full buffer. Cancel and timeout DO kill.
+            let start = Instant::now();
+            let timeout = Duration::from_secs(SHELL_EXEC_TIMEOUT_SECS);
+            let mut canceled = false;
+            let mut timed_out = false;
             let overflowed = loop {
+                if cancel.load(Ordering::Relaxed) {
+                    kill_process_group(&child);
+                    canceled = true;
+                    break false;
+                }
+                if start.elapsed() >= timeout {
+                    kill_process_group(&child);
+                    timed_out = true;
+                    break false;
+                }
                 if bytes_total.load(Ordering::Relaxed) >= streaming_cap {
                     break true;
                 }
-                match child.try_wait() {
-                    Ok(Some(_)) => break false,
-                    _ => {}
+                if let Ok(Some(_)) = child.try_wait() {
+                    break false;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             };
@@ -741,9 +777,21 @@ pub fn execute(
                     streaming_cap, total
                 ));
             }
+            if canceled {
+                out.push_str("\n[canceled by user before completion]");
+            }
+            if timed_out {
+                out.push_str(&format!(
+                    "\n[killed: exceeded {}s timeout. For long-running commands \
+                     use shell_bg + shell_poll; for searching code use grep_search.]",
+                    SHELL_EXEC_TIMEOUT_SECS
+                ));
+            }
             // Always report non-zero exit code so the model knows when a command failed.
+            // Skip when we killed the child ourselves: the signal-derived status
+            // is noise compared to the canceled/timeout message already appended.
             if let Some(s) = status {
-                if !s.success() {
+                if !s.success() && !canceled && !timed_out {
                     let code = s.code().unwrap_or(-1);
                     out.push_str(&format!("\n[exit {}]", code));
                 }
@@ -823,7 +871,7 @@ pub fn execute(
                 let deadline = Instant::now() + Duration::from_secs(timeout_secs);
                 loop {
                     std::thread::sleep(Duration::from_millis(200));
-                    if Instant::now() >= deadline {
+                    if cancel.load(Ordering::Relaxed) || Instant::now() >= deadline {
                         break None;
                     }
                     let mut registry = bg_registry().lock().unwrap();
@@ -1611,6 +1659,10 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    fn no_cancel() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
+
     fn dummy_config() -> AssistantConfig {
         AssistantConfig {
             api_key: "test".to_string(),
@@ -1660,7 +1712,7 @@ mod tests {
         let path = tmp.path().to_string_lossy();
         let args = serde_json::json!({"path": path.to_string()});
         let mut cwd = "/tmp".to_string();
-        let result = execute("fs_read", &args, &mut cwd, &dummy_config()).unwrap();
+        let result = execute("fs_read", &args, &mut cwd, &dummy_config(), &no_cancel()).unwrap();
         assert!(
             result.contains("[truncated:"),
             "expected truncation note in result, got: {}",
@@ -1677,7 +1729,7 @@ mod tests {
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let args = serde_json::json!({"path": dir.path().to_string_lossy().to_string()});
         let mut cwd = "/tmp".to_string();
-        let result = execute("fs_list", &args, &mut cwd, &dummy_config()).unwrap();
+        let result = execute("fs_list", &args, &mut cwd, &dummy_config(), &no_cancel()).unwrap();
         assert!(
             result.contains("a.txt"),
             "expected a.txt in listing: {}",
@@ -1691,6 +1743,34 @@ mod tests {
     }
 
     #[test]
+    fn shell_exec_respects_cancel_flag() {
+        // Spawn a sleep that would otherwise run for 30s; flip cancel after
+        // 200ms and confirm execute() returns promptly with a canceled marker.
+        let args = serde_json::json!({"command": "sleep 30"});
+        let mut cwd = "/tmp".to_string();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let trigger = Arc::clone(&cancel);
+        let flipper = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            trigger.store(true, Ordering::Relaxed);
+        });
+        let start = Instant::now();
+        let result = execute("shell_exec", &args, &mut cwd, &dummy_config(), &cancel).unwrap();
+        flipper.join().unwrap();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "cancel should return within a few seconds, took {:?}",
+            elapsed
+        );
+        assert!(
+            result.contains("[canceled by user"),
+            "expected canceled marker, got: {}",
+            result
+        );
+    }
+
+    #[test]
     fn grep_search_finds_pattern() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("data.txt"), "hello world\nfoo bar\n").unwrap();
@@ -1699,7 +1779,14 @@ mod tests {
             "path": dir.path().to_string_lossy().to_string()
         });
         let mut cwd = "/tmp".to_string();
-        let result = execute("grep_search", &args, &mut cwd, &dummy_config()).unwrap();
+        let result = execute(
+            "grep_search",
+            &args,
+            &mut cwd,
+            &dummy_config(),
+            &no_cancel(),
+        )
+        .unwrap();
         assert!(
             result.contains("hello world"),
             "expected match in result: {}",
