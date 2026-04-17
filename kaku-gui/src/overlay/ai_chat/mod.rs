@@ -537,7 +537,10 @@ impl App {
         options
     }
 
-    fn current_attachment_query(&self) -> Option<(usize, usize, String)> {
+    /// Return the (char-start, char-end, token) span of the word at the
+    /// cursor if it starts with `prefix`. Used by both the `@` attachment
+    /// picker and the `/` slash picker.
+    fn current_token_query(&self, prefix: char) -> Option<(usize, usize, String)> {
         let chars: Vec<char> = self.input.chars().collect();
         if self.input_cursor > chars.len() {
             return None;
@@ -554,10 +557,18 @@ impl App {
             return None;
         }
         let token: String = chars[start..end].iter().collect();
-        if !token.starts_with('@') {
+        if !token.starts_with(prefix) {
             return None;
         }
         Some((start, end, token))
+    }
+
+    fn current_attachment_query(&self) -> Option<(usize, usize, String)> {
+        self.current_token_query('@')
+    }
+
+    fn current_slash_query(&self) -> Option<(usize, usize, String)> {
+        self.current_token_query('/')
     }
 
     fn attachment_picker_options(&self) -> Vec<AttachmentOption> {
@@ -573,29 +584,6 @@ impl App {
                     || option.label.eq_ignore_ascii_case(&token)
             })
             .collect()
-    }
-
-    fn current_slash_query(&self) -> Option<(usize, usize, String)> {
-        let chars: Vec<char> = self.input.chars().collect();
-        if self.input_cursor > chars.len() {
-            return None;
-        }
-        let mut start = self.input_cursor;
-        while start > 0 && !chars[start - 1].is_whitespace() {
-            start -= 1;
-        }
-        let mut end = self.input_cursor;
-        while end < chars.len() && !chars[end].is_whitespace() {
-            end += 1;
-        }
-        if start == end {
-            return None;
-        }
-        let token: String = chars[start..end].iter().collect();
-        if !token.starts_with('/') {
-            return None;
-        }
-        Some((start, end, token))
     }
 
     fn slash_picker_options(&self) -> Vec<(&'static str, &'static str)> {
@@ -614,16 +602,30 @@ impl App {
             .collect()
     }
 
-    fn move_attachment_picker(&mut self, delta: isize) -> bool {
-        let options = self.attachment_picker_options();
-        if options.is_empty() {
+    /// Rotate the picker selection. `attachment_picker_index` is reused for
+    /// the slash picker because the two pickers are mutually exclusive (a
+    /// token cannot start with both `@` and `/`).
+    fn move_picker_index(&mut self, len: usize, delta: isize) -> bool {
+        if len == 0 {
             self.attachment_picker_index = 0;
             return false;
         }
-        let len = options.len() as isize;
-        let current = (self.attachment_picker_index as isize).clamp(0, len - 1);
-        self.attachment_picker_index = (current + delta).rem_euclid(len) as usize;
+        let len_i = len as isize;
+        let current = (self.attachment_picker_index as isize).clamp(0, len_i - 1);
+        self.attachment_picker_index = (current + delta).rem_euclid(len_i) as usize;
         true
+    }
+
+    fn replace_token(&mut self, start: usize, end: usize, replacement: &str) {
+        let byte_start = char_to_byte_pos(&self.input, start);
+        let byte_end = char_to_byte_pos(&self.input, end);
+        self.input.replace_range(byte_start..byte_end, replacement);
+        self.input_cursor = start + replacement.chars().count();
+    }
+
+    fn move_attachment_picker(&mut self, delta: isize) -> bool {
+        let len = self.attachment_picker_options().len();
+        self.move_picker_index(len, delta)
     }
 
     fn accept_attachment_picker(&mut self) -> bool {
@@ -637,29 +639,20 @@ impl App {
             return false;
         };
         let option = options[self.attachment_picker_index.min(options.len() - 1)];
-        let byte_start = char_to_byte_pos(&self.input, start);
-        let byte_end = char_to_byte_pos(&self.input, end);
         let mut replacement = option.label.to_string();
+        let byte_end = char_to_byte_pos(&self.input, end);
         let next_char = self.input[byte_end..].chars().next();
         if next_char.map_or(true, |ch| !ch.is_whitespace()) {
             replacement.push(' ');
         }
-        self.input.replace_range(byte_start..byte_end, &replacement);
-        self.input_cursor = start + replacement.chars().count();
+        self.replace_token(start, end, &replacement);
         self.attachment_picker_index = 0;
         true
     }
 
     fn move_slash_picker(&mut self, delta: isize) -> bool {
-        let options = self.slash_picker_options();
-        if options.is_empty() {
-            self.attachment_picker_index = 0;
-            return false;
-        }
-        let len = options.len() as isize;
-        let current = (self.attachment_picker_index as isize).clamp(0, len - 1);
-        self.attachment_picker_index = (current + delta).rem_euclid(len) as usize;
-        true
+        let len = self.slash_picker_options().len();
+        self.move_picker_index(len, delta)
     }
 
     fn accept_slash_picker(&mut self) -> bool {
@@ -673,10 +666,7 @@ impl App {
             return false;
         };
         let option = options[self.attachment_picker_index.min(options.len() - 1)];
-        let byte_start = char_to_byte_pos(&self.input, start);
-        let byte_end = char_to_byte_pos(&self.input, end);
-        self.input.replace_range(byte_start..byte_end, option.0);
-        self.input_cursor = start + option.0.chars().count();
+        self.replace_token(start, end, option.0);
         self.attachment_picker_index = 0;
         true
     }
