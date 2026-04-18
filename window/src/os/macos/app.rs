@@ -4,11 +4,11 @@ use crate::macos::{nsstring, nsstring_to_str};
 use crate::menu::{Menu, MenuItem};
 use crate::{ApplicationEvent, Connection, KeyCode, Modifiers};
 use cocoa::appkit::{
-    NSApp, NSApplicationActivateIgnoringOtherApps, NSApplicationTerminateReply,
+    CGFloat, NSApp, NSApplicationActivateIgnoringOtherApps, NSApplicationTerminateReply,
     NSEventModifierFlags, NSFilenamesPboardType, NSRunningApplication, NSStringPboardType,
 };
 use cocoa::base::{id, nil};
-use cocoa::foundation::NSInteger;
+use cocoa::foundation::{NSInteger, NSRect, NSUInteger};
 use config::keyassignment::KeyAssignment;
 use config::WindowCloseConfirmation;
 use core_foundation::base::{CFTypeID, TCFType};
@@ -775,14 +775,88 @@ extern "C" fn screens_did_wake(_self: &mut Object, _sel: Sel, _notification: *mu
     refresh_all_window_contexts_after_display_change("system wake", DISPLAY_CHANGE_MAX_RETRIES);
 }
 
+/// One entry per NSScreen. Used to detect whether a display-parameter
+/// notification reflects an actual topology change (monitor connect/disconnect,
+/// resolution/arrangement change) versus a spurious one fired by menubar tools
+/// (sketchybar, iStat Menus) or Dock position shifts. The latter arrive at
+/// 10+ Hz in some setups and each triggers a ~150ms paint defer + full
+/// per-window GL refresh, which is the primary cause of perceived lag when
+/// cross-screen moves or window hotkeys fire nearby.
+#[derive(Clone, PartialEq)]
+struct ScreenSig {
+    name: String,
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
+    scale_x100: u32,
+}
+
+static LAST_SCREEN_TOPOLOGY: Mutex<Option<Vec<ScreenSig>>> = Mutex::new(None);
+
+fn current_screen_topology() -> Vec<ScreenSig> {
+    unsafe {
+        let screens: id = msg_send![class!(NSScreen), screens];
+        if screens.is_null() {
+            return vec![];
+        }
+        let count: NSUInteger = msg_send![screens, count];
+        let mut out = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let scr: id = msg_send![screens, objectAtIndex: i];
+            if scr.is_null() {
+                continue;
+            }
+            let frame: NSRect = msg_send![scr, frame];
+            let scale: CGFloat = msg_send![scr, backingScaleFactor];
+            let has_name: BOOL = msg_send![scr, respondsToSelector: sel!(localizedName)];
+            let name = if has_name == YES {
+                let nsname: id = msg_send![scr, localizedName];
+                if nsname.is_null() {
+                    String::new()
+                } else {
+                    nsstring_to_str(nsname).to_string()
+                }
+            } else {
+                String::new()
+            };
+            out.push(ScreenSig {
+                name,
+                x: frame.origin.x as i64,
+                y: frame.origin.y as i64,
+                w: frame.size.width as i64,
+                h: frame.size.height as i64,
+                scale_x100: (scale * 100.0) as u32,
+            });
+        }
+        out
+    }
+}
+
 /// Called when macOS reports a display topology change (screen attach/detach,
 /// resolution or arrangement changes). Refreshes all window backends so stale
 /// OpenGL drawables and cached screen-dependent values are rebuilt promptly.
+///
+/// Compares the current NSScreen topology against the last-known snapshot and
+/// skips the refresh entirely when nothing changed. Menubar customizers and
+/// window managers fire this notification frequently without a real topology
+/// change; each unnecessary refresh blocks paint for 150-300ms per window.
 extern "C" fn screen_parameters_did_change(
     _self: &mut Object,
     _sel: Sel,
     _notification: *mut Object,
 ) {
+    let current = current_screen_topology();
+    {
+        let mut cached = LAST_SCREEN_TOPOLOGY.lock().unwrap();
+        if cached.as_ref() == Some(&current) {
+            log::trace!(
+                "NSApplicationDidChangeScreenParametersNotification ignored; topology unchanged"
+            );
+            return;
+        }
+        *cached = Some(current);
+    }
     log::debug!("NSApplicationDidChangeScreenParametersNotification received, refreshing displays");
     refresh_all_window_contexts_after_display_change(
         "screen parameter change",
