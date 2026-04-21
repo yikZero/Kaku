@@ -1,0 +1,52 @@
+---
+title: Kaku Docs
+description: A fast terminal for AI coding
+template: splash
+hero:
+  tagline: A fast terminal for AI coding
+  actions:
+    - text: Get Started
+      link: /Kaku/en/docs/start/install/
+      icon: right-arrow
+      variant: primary
+    - text: GitHub
+      link: https://github.com/tw93/Kaku
+      icon: external
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## Pick a path that fits your goal
+
+<CardGrid>
+  <LinkCard
+    title="🚀 I'm new here"
+    description="5-minute quickstart, from install to liftoff"
+    href="/Kaku/en/docs/start/install/"
+  />
+  <LinkCard
+    title="🔧 I want to configure"
+    description="Lua config, fully WezTerm-compatible"
+    href="/Kaku/en/docs/config/lua/"
+  />
+  <LinkCard
+    title="🤖 I want to use AI"
+    description="Error recovery, natural-language commands, provider setup"
+    href="/Kaku/en/docs/ai/overview/"
+  />
+  <LinkCard
+    title="⌨️ Keybinding reference"
+    description="Complete shortcut cheatsheet"
+    href="/Kaku/en/docs/config/keybindings/"
+  />
+  <LinkCard
+    title="🔄 Coming from iTerm2"
+    description="Keep the habits you already have"
+    href="/Kaku/en/docs/start/migrate-iterm2/"
+  />
+  <LinkCard
+    title="🔄 Coming from WezTerm"
+    description="Reuse your existing config as-is"
+    href="/Kaku/en/docs/start/migrate-wezterm/"
+  />
+</CardGrid>
