@@ -12,11 +12,14 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::{ai_auth, ai_gemini};
+
 const DEFAULT_MODEL: &str = "gpt-5.4-mini";
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
 /// Configuration loaded from `assistant.toml`.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct AssistantConfig {
     pub api_key: String,
     /// Chat overlay model. Falls back to `model` from assistant.toml when omitted.
@@ -25,6 +28,10 @@ pub struct AssistantConfig {
     /// overlay cycles only through these via Shift+Tab and skips the auto-fetch step.
     pub chat_model_choices: Vec<String>,
     pub base_url: String,
+    /// Provider name derived from base_url and auth_type (e.g. "OpenAI", "Copilot").
+    pub provider: String,
+    /// Auth mechanism: "api_key" (default), "copilot", "codex", or "gemini_key".
+    pub auth_type: String,
     /// When false, the `tools` field is omitted from chat requests.
     /// Set `chat_tools_enabled = false` in assistant.toml for providers that do not
     /// support function calling (e.g. some Kimi or local-model variants).
@@ -48,16 +55,27 @@ impl AssistantConfig {
             .with_context(|| format!("Cannot read {}", path.display()))?;
         let parsed: toml::Value = raw.parse().context("Invalid assistant.toml")?;
 
+        let auth_type = parsed
+            .get("auth_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("api_key")
+            .to_string();
+
+        // OAuth providers (Copilot, Codex) do not need an api_key in the TOML.
+        let api_key_required = matches!(auth_type.as_str(), "api_key" | "gemini_key");
+
         let api_key = parsed
             .get("api_key")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "api_key not set in {}. Run `kaku ai` to configure.",
-                    path.display()
-                )
-            })?
+            .unwrap_or("")
             .to_string();
+
+        if api_key_required && api_key.trim().is_empty() {
+            anyhow::bail!(
+                "api_key not set in {}. Run `kaku ai` to configure.",
+                path.display()
+            );
+        }
 
         let model = parsed
             .get("model")
@@ -90,9 +108,12 @@ impl AssistantConfig {
             .trim_end_matches('/')
             .to_string();
 
+        let provider = detect_provider_with_auth(&base_url, &auth_type).to_string();
+
         let chat_tools_enabled = parsed
             .get("chat_tools_enabled")
             .and_then(|v| v.as_bool())
+            // Gemini tools are supported but off by default until format mapping is verified.
             .unwrap_or(true);
 
         let web_search_provider = parsed
@@ -124,6 +145,8 @@ impl AssistantConfig {
             chat_model,
             chat_model_choices,
             base_url,
+            provider,
+            auth_type,
             chat_tools_enabled,
             web_search_provider,
             web_search_api_key,
@@ -181,10 +204,17 @@ impl ApiMessage {
         }))
     }
     /// Tool result message returned after executing a function call.
-    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+    /// Includes the tool name so non-OpenAI providers (for example Gemini)
+    /// can map responses back to the corresponding function declaration.
+    pub fn tool_result(
+        tool_call_id: impl Into<String>,
+        name: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self(serde_json::json!({
             "role": "tool",
             "tool_call_id": tool_call_id.into(),
+            "name": name.into(),
             "content": content.into()
         }))
     }
@@ -255,13 +285,15 @@ impl AiClient {
     /// Fetch available chat models from `{base_url}/models`.
     /// Filters out non-chat models (embeddings, TTS, image, etc.).
     pub fn list_models(&self) -> Result<Vec<String>> {
+        // Gemini uses a different models listing endpoint.
+        if self.config.auth_type == "gemini_key" {
+            return self.list_gemini_models();
+        }
+
         let url = format!("{}/models", self.config.base_url);
-        let resp = self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .send()
-            .context("GET /models failed")?;
+        let req = self.client.get(&url);
+        let req = self.apply_auth_headers(req)?;
+        let resp = req.send().context("GET /models failed")?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().unwrap_or_default();
@@ -283,6 +315,76 @@ impl AiClient {
         Ok(out)
     }
 
+    fn list_gemini_models(&self) -> Result<Vec<String>> {
+        let api_key = &self.config.api_key;
+        let base = self.config.base_url.trim_end_matches('/');
+        let url = if api_key.is_empty() {
+            format!("{base}/v1beta/models")
+        } else {
+            format!("{base}/v1beta/models?key={api_key}")
+        };
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .context("GET Gemini /models failed")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            anyhow::bail!("Gemini models API {}: {}", status, body);
+        }
+        let v: serde_json::Value = resp.json().context("parse Gemini /models response")?;
+        let arr = match v.get("models").and_then(|m| m.as_array()) {
+            Some(a) => a,
+            None => return Ok(vec![]),
+        };
+        let mut out: Vec<String> = arr
+            .iter()
+            .filter_map(|m| {
+                let name = m.get("name")?.as_str()?;
+                // name format: "models/gemini-2.5-pro" -> extract the short id
+                Some(name.strip_prefix("models/").unwrap_or(name).to_string())
+            })
+            .filter(|id| {
+                let id_lower = id.to_ascii_lowercase();
+                id_lower.starts_with("gemini")
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out.truncate(20);
+        Ok(out)
+    }
+
+    /// Build provider-specific auth headers for the HTTP request builder.
+    fn apply_auth_headers(
+        &self,
+        req: reqwest::blocking::RequestBuilder,
+    ) -> Result<reqwest::blocking::RequestBuilder> {
+        match self.config.auth_type.as_str() {
+            "copilot" => {
+                let token = ai_auth::get_copilot_token(&self.client)?;
+                Ok(req
+                    .header("Authorization", format!("Bearer {token}"))
+                    .header("Copilot-Integration-Id", "vscode-chat")
+                    .header("Editor-Version", "vscode/1.110.1")
+                    .header("Editor-Plugin-Version", "copilot-chat/0.38.2")
+                    .header("Openai-Organization", "github-copilot")
+                    .header("Openai-Intent", "conversation-panel"))
+            }
+            "codex" => {
+                let token = ai_auth::read_codex_access_token().ok_or_else(|| {
+                    anyhow::anyhow!("Codex: not logged in. Run `codex auth login` to authenticate.")
+                })?;
+                Ok(req.header("Authorization", format!("Bearer {token}")))
+            }
+            _ => {
+                // api_key, gemini_key (api_key field used as Bearer or query param handled elsewhere)
+                Ok(req.header("Authorization", format!("Bearer {}", self.config.api_key)))
+            }
+        }
+    }
+
     /// Single chat step with optional tool support.
     ///
     /// Streams text tokens via `on_token`. If the model responds by requesting
@@ -298,6 +400,11 @@ impl AiClient {
         cancelled: &AtomicBool,
         on_token: &mut dyn FnMut(&str),
     ) -> Result<Vec<ToolCall>> {
+        // Gemini uses a completely different API format.
+        if self.config.auth_type == "gemini_key" {
+            return self.chat_step_gemini(model, messages, tools, cancelled, on_token);
+        }
+
         let url = format!("{}/chat/completions", self.config.base_url);
 
         let mut body = serde_json::json!({
@@ -309,17 +416,16 @@ impl AiClient {
             body["tools"] = serde_json::Value::Array(tools.to_vec());
         }
 
-        let response = self
+        let req = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
             .header("Accept", "text/event-stream")
             .header("Cache-Control", "no-cache")
             .header("Accept-Encoding", "identity")
-            .json(&body)
-            .send()
-            .context("HTTP request failed")?;
+            .json(&body);
+        let req = self.apply_auth_headers(req)?;
+        let response = req.send().context("HTTP request failed")?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -394,20 +500,64 @@ impl AiClient {
             }
         }
 
-        // Build ToolCall results only when the model explicitly requested tool use.
-        if finish_reason == "tool_calls" {
+        // Build ToolCall results. Some proxies (e.g. vivgrid) never set
+        // finish_reason to "tool_calls" even when streaming tool call deltas,
+        // so fall back to any accumulated tc_buf entries with a valid name.
+        if finish_reason == "tool_calls" || !tc_buf.is_empty() {
             let calls = tc_buf
                 .into_values()
+                .filter(|b| !b.name.is_empty())
                 .map(|b| ToolCall {
                     id: b.id,
                     name: b.name,
                     arguments: b.arguments,
                 })
-                .collect();
-            Ok(calls)
+                .collect::<Vec<_>>();
+            if calls.is_empty() {
+                Ok(vec![])
+            } else {
+                Ok(calls)
+            }
         } else {
             Ok(vec![])
         }
+    }
+
+    fn chat_step_gemini(
+        &self,
+        model: &str,
+        messages: &[ApiMessage],
+        tools: &[serde_json::Value],
+        cancelled: &AtomicBool,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<Vec<ToolCall>> {
+        let raw_messages: Vec<serde_json::Value> = messages.iter().map(|m| m.0.clone()).collect();
+        let effective_tools: &[serde_json::Value] = if self.config.chat_tools_enabled {
+            tools
+        } else {
+            &[]
+        };
+
+        let body = ai_gemini::openai_messages_to_gemini(&raw_messages, effective_tools);
+        let url = ai_gemini::gemini_stream_url(&self.config.base_url, model, &self.config.api_key);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream")
+            .header("Accept-Encoding", "identity")
+            .json(&body)
+            .send()
+            .context("Gemini HTTP request failed")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response.text().unwrap_or_default();
+            anyhow::bail!("Gemini API error {}: {}", status, body_text);
+        }
+
+        ai_gemini::stream_gemini_response(response, cancelled, on_token)
     }
 }
 
@@ -419,6 +569,20 @@ struct ToolCallBuf {
     id: String,
     name: String,
     arguments: String,
+}
+
+/// Maps (base_url, auth_type) to a display provider name.
+///
+/// Mirrors `assistant_config::detect_provider_with_auth` from the kaku crate;
+/// kept local to avoid a cross-binary dependency.
+fn detect_provider_with_auth(base_url: &str, auth_type: &str) -> &'static str {
+    let normalized = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
+    match (normalized.as_str(), auth_type) {
+        (u, _) if u == "https://api.githubcopilot.com" => "Copilot",
+        (u, _) if u == "https://generativelanguage.googleapis.com" => "Gemini",
+        (u, "codex") if u == "https://api.openai.com/v1" => "Codex",
+        _ => "Custom",
+    }
 }
 
 // Delegated to kaku-ai-utils crate to avoid cross-binary drift.
