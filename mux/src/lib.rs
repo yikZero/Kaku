@@ -1073,7 +1073,7 @@ impl Mux {
 
     pub fn notify(&self, notification: MuxNotification) {
         // Collect subscribers while holding the lock briefly
-        let subscribers: Vec<(usize, Arc<dyn Fn(MuxNotification) -> bool + Send + Sync>)> = self
+        let subscribers: Vec<(usize, Arc<dyn Fn(&MuxNotification) -> bool + Send + Sync>)> = self
             .subscribers
             .read()
             .iter()
