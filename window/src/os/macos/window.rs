@@ -1482,15 +1482,11 @@ impl WindowOps for Window {
         if let Some(ns_view) = self.ns_view() {
             unsafe {
                 if let Some(view) = WindowView::get_this(&*ns_view) {
+                    // Hide content during entire native fullscreen transition
+                    // (both enter and exit). During exit the GL buffer is deferred
+                    // anyway, so full paint cycles are wasted work.
                     if view.native_fullscreen_transition_active.get() {
-                        match view.native_fullscreen_target.get() {
-                            // Enter fullscreen: keep hidden for whole transition to avoid text scale pop.
-                            Some(true) => return true,
-                            // Exit fullscreen: avoid showing a rectangular placeholder
-                            // during the restore animation.
-                            Some(false) => view.transition_hide_until.set(None),
-                            None => return true,
-                        }
+                        return true;
                     }
                     if let Some(until) = view.transition_hide_until.get() {
                         if Instant::now() < until {
