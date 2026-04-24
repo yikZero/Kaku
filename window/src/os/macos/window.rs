@@ -1968,7 +1968,41 @@ impl WindowInner {
                 // on lock-screen return). Doing heavy render work synchronously here
                 // can cause a main-thread busy-loop hang.
                 inner.invalidated = true;
-                Connection::with_window_inner(window_id, |inner| {
+                let is_fullscreen = fullscreen_like;
+                Connection::with_window_inner(window_id, move |inner| {
+                    if !is_fullscreen {
+                        // Reapply window decorations so the title bar is
+                        // restored after a monitor disconnection.
+                        inner.apply_decorations();
+
+                        // If the window's top edge landed outside every
+                        // visible screen (e.g. the monitor it was on got
+                        // unplugged), move it to the center of the main
+                        // screen so the title bar stays reachable.
+                        unsafe {
+                            let frame = NSWindow::frame(*inner.window);
+                            let top_left_x = frame.origin.x;
+                            let top_left_y = frame.origin.y + frame.size.height;
+                            let screens = NSScreen::screens(nil);
+                            let count = screens.count();
+                            let mut on_screen = false;
+                            for idx in 0..count {
+                                let screen = screens.objectAtIndex(idx);
+                                let sf: NSRect = msg_send![screen, visibleFrame];
+                                if top_left_x >= sf.origin.x
+                                    && top_left_x <= sf.origin.x + sf.size.width
+                                    && top_left_y >= sf.origin.y
+                                    && top_left_y <= sf.origin.y + sf.size.height
+                                {
+                                    on_screen = true;
+                                    break;
+                                }
+                            }
+                            if !on_screen {
+                                let _: () = msg_send![*inner.window, center];
+                            }
+                        }
+                    }
                     if let Some(window_view) = WindowView::get_this(unsafe { &**inner.view }) {
                         window_view
                             .inner
