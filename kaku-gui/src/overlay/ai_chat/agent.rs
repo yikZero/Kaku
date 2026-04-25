@@ -182,7 +182,25 @@ pub(crate) fn run_agent(
                 break;
             }
 
-            let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+            // Bail out early on malformed JSON instead of feeding Value::Null
+            // into approval/execute, which produces confusing "missing path"
+            // errors that hide the real cause (truncated SSE chunk, mojibake).
+            let args: serde_json::Value = match serde_json::from_str(&tc.arguments) {
+                Ok(v) => v,
+                Err(e) => {
+                    let err = format!(
+                        "tool '{}' arguments were not valid JSON: {}",
+                        tc.name, e
+                    );
+                    let _ = tx.send(StreamMsg::ToolFailed { error: err.clone() });
+                    messages.push(ApiMessage::tool_result(
+                        tc.id.clone(),
+                        tc.name.clone(),
+                        format!("Error: {}", err),
+                    ));
+                    continue;
+                }
+            };
             // Extract a clean display hint. Priority: "query" (web_search/grep), "path", first value.
             let args_preview = args
                 .get("query")
