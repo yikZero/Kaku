@@ -434,21 +434,42 @@ impl App {
         client: AiClient,
     ) -> Self {
         // If the user provided a curated list, use it directly and skip the fetch.
-        // Otherwise, start with just the configured chat_model and fetch the rest
-        // from /v1/models in the background.
+        // Otherwise, seed with the cached model list from the previous session (if any)
+        // and refresh from /v1/models in the background so the overlay is instantly ready.
         let (available_models, model_fetch, model_fetch_rx) = if !chat_model_choices.is_empty() {
             let mut models = chat_model_choices;
             models.retain(|m| m != &chat_model);
             models.insert(0, chat_model);
             (models, ModelFetch::Loaded, None)
         } else {
+            let cached = crate::ai_state::load_cached_models();
+            let initial_models = if cached.is_empty() {
+                vec![chat_model.clone()]
+            } else {
+                let mut models = cached;
+                models.retain(|m| m != &chat_model);
+                models.insert(0, chat_model.clone());
+                models
+            };
+            let initial_fetch = if initial_models.len() > 1 {
+                ModelFetch::Loaded
+            } else {
+                ModelFetch::Loading
+            };
             let (tx, rx) = mpsc::channel::<Result<Vec<String>, String>>();
             let fetch_client = client.clone();
+            let chat_model_clone = chat_model.clone();
             std::thread::spawn(move || {
                 let result = fetch_client.list_models().map_err(|e| e.to_string());
+                if let Ok(ref models) = result {
+                    let mut to_save = models.clone();
+                    to_save.retain(|m| m != &chat_model_clone);
+                    to_save.insert(0, chat_model_clone);
+                    let _ = crate::ai_state::save_cached_models(&to_save);
+                }
                 let _ = tx.send(result);
             });
-            (vec![chat_model], ModelFetch::Loading, Some(rx))
+            (initial_models, initial_fetch, Some(rx))
         };
 
         // Restore the last selected model from disk. If it exists in available_models,
@@ -463,10 +484,16 @@ impl App {
         };
 
         // Ensure there is an active conversation and load its messages.
-        let (active_id, history) = ai_conversations::ensure_active().unwrap_or_else(|e| {
-            log::warn!("Failed to ensure active conversation: {e}");
-            (String::new(), vec![])
-        });
+        // If that fails, try to create a fresh one so the session can still be persisted.
+        let (active_id, history) = ai_conversations::ensure_active()
+            .or_else(|e| {
+                log::warn!("Failed to load active conversation ({e}), creating new one");
+                ai_conversations::start_new_active().map(|id| (id, vec![]))
+            })
+            .unwrap_or_else(|e| {
+                log::warn!("Failed to create active conversation: {e}");
+                (String::new(), vec![])
+            });
         let mut messages: Vec<Message> = history
             .into_iter()
             .map(|p| {
@@ -1633,6 +1660,16 @@ impl App {
         }
     }
 
+    /// Cancel any in-progress stream and reset streaming state.
+    fn cancel_stream(&mut self) {
+        self.cancel_flag.store(true, Ordering::Relaxed);
+        self.token_rx = None;
+        self.is_streaming = false;
+        self.grapheme_queue.clear();
+        self.stream_pending_done = false;
+        self.stream_pending_err = None;
+    }
+
     /// Return the cached flat list of display lines.
     /// Call rebuild_display_cache() first to ensure it is up to date.
     fn display_lines(&self) -> &[DisplayLine] {
@@ -1665,6 +1702,9 @@ impl App {
 
     /// Finalize the current active conversation and start a fresh one.
     fn start_new_conversation(&mut self) {
+        if self.is_streaming {
+            self.cancel_stream();
+        }
         let msgs = self.collect_persisted_messages();
         if msgs.is_empty() {
             self.messages.push(Message::text(
@@ -1724,6 +1764,9 @@ impl App {
 
     /// Load the conversation at `idx` from the picker list.
     fn load_conversation_from_picker(&mut self, idx: usize) {
+        if self.is_streaming {
+            self.cancel_stream();
+        }
         let (items, _) = match std::mem::replace(&mut self.mode, AppMode::Chat) {
             AppMode::ResumePicker { items, cursor } => (items, cursor),
             _ => return,

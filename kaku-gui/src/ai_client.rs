@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 use crate::{ai_auth, ai_gemini};
 
@@ -246,17 +247,28 @@ pub struct AiClient {
     client: reqwest::blocking::Client,
 }
 
-impl AiClient {
-    pub fn new(config: AssistantConfig) -> Self {
-        let client = reqwest::blocking::Client::builder()
+/// Process-level HTTP client shared across all overlay sessions.
+/// TLS stack is initialized once; subsequent `AiClient::new` calls are free.
+fn shared_http_client() -> &'static reqwest::blocking::Client {
+    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::blocking::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
             .timeout(std::time::Duration::from_secs(600))
             .build()
             .unwrap_or_else(|e| {
                 log::warn!("Failed to build HTTP client: {e}; falling back to default client");
                 reqwest::blocking::Client::new()
-            });
-        Self { config, client }
+            })
+    })
+}
+
+impl AiClient {
+    pub fn new(config: AssistantConfig) -> Self {
+        Self {
+            config,
+            client: shared_http_client().clone(),
+        }
     }
 
     /// Whether this client will include tools in chat requests.

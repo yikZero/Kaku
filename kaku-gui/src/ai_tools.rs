@@ -843,7 +843,7 @@ pub fn execute(
             }
             bg_registry()
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .insert(pid, BgProcess { child, output });
             format!(
                 "Background process started (pid {}). Use shell_poll to check status.",
@@ -857,7 +857,7 @@ pub fn execute(
             // Take a snapshot of the output buffer and do a non-blocking try_wait
             // while holding the registry lock for as short a time as possible.
             let (snapshot, status_opt) = {
-                let mut registry = bg_registry().lock().unwrap();
+                let mut registry = bg_registry().lock().unwrap_or_else(|e| e.into_inner());
                 let proc = registry
                     .get_mut(&pid)
                     .ok_or_else(|| anyhow::anyhow!("no background process with pid {}", pid))?;
@@ -882,7 +882,7 @@ pub fn execute(
                     if cancel.load(Ordering::Relaxed) || Instant::now() >= deadline {
                         break None;
                     }
-                    let mut registry = bg_registry().lock().unwrap();
+                    let mut registry = bg_registry().lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(proc) = registry.get_mut(&pid) {
                         if let Ok(Some(s)) = proc.child.try_wait() {
                             break Some(s);
@@ -895,7 +895,7 @@ pub fn execute(
 
             // If the process finished, grab the final output and remove it from the registry.
             let final_snapshot = if final_status.is_some() {
-                let mut registry = bg_registry().lock().unwrap();
+                let mut registry = bg_registry().lock().unwrap_or_else(|e| e.into_inner());
                 let snap = registry
                     .get(&pid)
                     .and_then(|p| p.output.lock().ok().map(|g| g.clone()))
@@ -1078,7 +1078,10 @@ fn web_client() -> &'static reqwest::blocking::Client {
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(60))
             .build()
-            .expect("web client build")
+            .unwrap_or_else(|e| {
+                log::warn!("web client build failed ({e}), falling back to default");
+                reqwest::blocking::Client::new()
+            })
     })
 }
 
