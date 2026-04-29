@@ -1080,6 +1080,26 @@ alias glgp='git log --stat -p'
     rm -f -- "\$tmp"
 }
 
+# k — AI chat CLI bundled with Kaku.
+'k'() {
+    emulate -L zsh
+    local k_cmd
+    for _candidate in \
+        "\${KAKU_ZSH_DIR:+\$KAKU_ZSH_DIR/../../MacOS/k}" \
+        "\$HOME/Applications/Kaku.app/Contents/MacOS/k" \
+        "/Applications/Kaku.app/Contents/MacOS/k"; do
+        if [[ -x "\$_candidate" ]]; then
+            k_cmd="\$_candidate"
+            break
+        fi
+    done
+    if [[ -z "\$k_cmd" ]]; then
+        echo "k: Kaku app not found. Install Kaku from https://github.com/tw93/Kaku"
+        return 127
+    fi
+    "\$k_cmd" "\$@"
+}
+
 # Load Plugins (Performance Optimized)
 
 # Load zsh-completions into fpath before compinit.

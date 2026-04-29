@@ -745,6 +745,9 @@ else
   wezterm.log_error('Kaku: bundled defaults not found')
 end
 
+-- Default color scheme. Change to 'Kaku Light' or 'Auto' (follows system appearance).
+config.color_scheme = 'Kaku Dark'
+
 -- User overrides:
 -- Kaku intentionally keeps WezTerm-compatible Lua API names
 -- for maximum compatibility, so `wezterm.*` here is expected.

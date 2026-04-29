@@ -871,6 +871,22 @@ function y
     end
     rm -f -- $tmp
 end
+
+# k — AI chat CLI bundled with Kaku.
+function k
+    set -l k_cmd ""
+    for _candidate in "$HOME/Applications/Kaku.app/Contents/MacOS/k" "/Applications/Kaku.app/Contents/MacOS/k"
+        if test -x "$_candidate"
+            set k_cmd "$_candidate"
+            break
+        end
+    end
+    if test -z "$k_cmd"
+        echo "k: Kaku app not found. Install Kaku from https://github.com/tw93/Kaku"
+        return 127
+    end
+    $k_cmd $argv
+end
 EOF
 
 echo -e "  ${GREEN}✓${NC} ${BOLD}Script${NC}      Generated kaku.fish init script"
