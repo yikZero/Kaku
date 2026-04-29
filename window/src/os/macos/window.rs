@@ -1787,7 +1787,7 @@ impl WindowInner {
             // corners by setting the window background to the theme color for
             // opaque windows.  Transparent windows keep clearColor so
             // see-through rendering is preserved.
-            if is_opaque == YES {
+            let layer_bg_cg = if is_opaque == YES {
                 let bg = self
                     .config
                     .resolved_palette
@@ -1800,10 +1800,12 @@ impl WindowInner {
                     alpha: 1.0 as CGFloat
                 ];
                 let _: () = msg_send![*self.window, setBackgroundColor: ns_bg];
+                objc2_core_graphics::CGColor::new_srgb(bg.0.into(), bg.1.into(), bg.2.into(), 1.0)
             } else {
                 let clear: id = msg_send![class!(NSColor), clearColor];
                 let _: () = msg_send![*self.window, setBackgroundColor: clear];
-            }
+                objc2_core_graphics::CGColor::new_srgb(0., 0., 0., 0.)
+            };
 
             // Match our Metal layer's corner radius to the window frame's corner
             // radius so compositor-clipped corners don't leave transparent arcs.
@@ -1838,6 +1840,7 @@ impl WindowInner {
                     let () = msg_send![layer, setCornerRadius: corner_radius];
                     let () = msg_send![layer, setMasksToBounds: (corner_radius > 0.0) as BOOL];
                     let () = msg_send![layer, setOpaque: is_opaque];
+                    let () = msg_send![layer, setBackgroundColor: layer_bg_cg.clone()];
                     let sublayers: id = msg_send![layer, sublayers];
                     if !sublayers.is_null() {
                         let count = sublayers.count();
@@ -1846,6 +1849,7 @@ impl WindowInner {
                             let () = msg_send![sublayer, setCornerRadius: corner_radius];
                             let () = msg_send![sublayer, setMasksToBounds: (corner_radius > 0.0) as BOOL];
                             let () = msg_send![sublayer, setOpaque: is_opaque];
+                            let () = msg_send![sublayer, setBackgroundColor: layer_bg_cg.clone()];
                         }
                     }
                 }
@@ -1854,15 +1858,6 @@ impl WindowInner {
     }
 
     fn update_titlebar_background(&self) {
-        let should_color_titlebar = self
-            .config
-            .window_decorations
-            .contains(WindowDecorations::MACOS_USE_BACKGROUND_COLOR_AS_TITLEBAR_COLOR)
-            || self.config.window_background_opacity < 1.0;
-        if !should_color_titlebar {
-            return;
-        }
-
         // When the window is transparent and uses integrated buttons, our Metal
         // rendering already paints a semi-transparent fill strip in the titlebar
         // area.  Setting the NSTitlebarContainerView layer to a non-clear color
@@ -4056,13 +4051,19 @@ impl WindowView {
         Self::mouse_common(this, nsevent, MouseEventKind::Press(MousePress::Left));
 
         // Execute drag synchronously: app layer may call request_drag_move() in mouse_common to set flag
-        // But skip if in fullscreen mode
+        // But skip if in fullscreen mode or if the window is zoomed (maximized). On macOS Sequoia,
+        // calling performWindowDragWithEvent: on a zoomed window whose frame already touches the top
+        // screen edge causes window managers (Raycast, Magnet, etc.) to immediately snap the window
+        // to fullscreen on a single click. Use double-click to un-zoom instead.
         let pending_drag = PENDING_DRAG_MOVE.with(|flag| flag.replace(false));
         if pending_drag && !in_fullscreen {
             unsafe {
                 let window: id = msg_send![this as id, window];
                 if window != nil {
-                    let () = msg_send![window, performWindowDragWithEvent: nsevent];
+                    let is_zoomed: bool = msg_send![window, isZoomed];
+                    if !is_zoomed {
+                        let () = msg_send![window, performWindowDragWithEvent: nsevent];
+                    }
                 }
             }
         }
