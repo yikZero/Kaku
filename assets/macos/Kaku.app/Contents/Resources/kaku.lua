@@ -1349,15 +1349,6 @@ local function inject_ai_status_and_finalize(pane, message)
   finalize_shell_line(pane)
 end
 
-local function show_ai_loading_toast(window, pane)
-  if not window or not pane then
-    return
-  end
-  pcall(function()
-    window:perform_action(wezterm.action.EmitEvent("kaku-toast-ai-analyzing"), pane)
-  end)
-end
-
 local function clear_ai_fix_suggestion_state(pane_state)
   if not pane_state then
     return
@@ -3335,7 +3326,6 @@ wezterm.on('user-var-changed', function(window, pane, name, value)
 
   pane_state.inflight = true
   pane_state.pending_job_id = nil
-  show_ai_loading_toast(window, pane)
 
   local cwd = pane_cwd(pane)
   local git_branch = detect_git_branch(cwd)
