@@ -44,6 +44,9 @@ pub struct AssistantConfig {
     /// Hidden escape hatch: path to a custom fetch script (not in TUI or template).
     /// Script receives the URL as $1 and must print Markdown to stdout.
     pub web_fetch_script: Option<String>,
+    /// Optional fast model for the chat overlay. When set (and different from
+    /// chat_model), the overlay offers exactly two model slots via Shift+Tab.
+    pub fast_model: Option<String>,
     /// Optional dedicated model for background memory curation. Falls back to
     /// `chat_model` when unset. Point at a cheaper/faster model to reduce cost.
     pub memory_curator_model: Option<String>,
@@ -135,6 +138,12 @@ impl AssistantConfig {
             .filter(|s| !s.is_empty())
             .map(|s| expand_tilde(s));
 
+        let fast_model = parsed
+            .get("fast_model")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
         let memory_curator_model = parsed
             .get("memory_curator_model")
             .and_then(|v| v.as_str())
@@ -152,6 +161,7 @@ impl AssistantConfig {
             web_search_provider,
             web_search_api_key,
             web_fetch_script,
+            fast_model,
             memory_curator_model,
         })
     }

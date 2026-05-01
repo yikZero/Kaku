@@ -189,8 +189,9 @@ pub fn default_assistant_toml_template() -> String {
 # enabled: true enables command analysis suggestions; false disables requests.\n\
 # api_key: provider API key, example: \"sk-xxxx\".\n\
 # model: inline command-completion model (fast + cheap).\n\
-# chat_model: chat overlay model (Cmd+L). Press Tab in-overlay to\n\
-#             cycle through available models. Omit to reuse `model`.\n\
+# chat_model: chat overlay model (Cmd+L), the stronger model. Omit to reuse `model`.\n\
+# fast_model: optional fast/cheap model for the chat overlay. When set,\n\
+#             Shift+Tab toggles between chat_model and fast_model.\n\
 # chat_model_choices: optional curated list for the chat overlay. When set,\n\
 #                     Kaku skips auto-fetching from /models and cycles only\n\
 #                     through these entries.\n\

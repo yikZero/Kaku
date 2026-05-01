@@ -2633,6 +2633,8 @@ struct KakuAssistantConfig {
     auth_type: String,
     /// Optional extra request headers as `Name: Value`
     custom_headers: Vec<String>,
+    /// Optional fast model for the chat overlay (empty = not set).
+    fast_model: String,
     /// Web search backend: "none" (disabled), "brave", "pipellm", or "tavily".
     web_search_provider: String,
     /// API key for the web search provider (empty = not configured).
@@ -2671,6 +2673,7 @@ impl KakuAssistantConfig {
             base_url: resolved_base_url,
             auth_type: "api_key".to_string(),
             custom_headers: vec![],
+            fast_model: String::new(),
             web_search_provider: "none".to_string(),
             web_search_api_key: String::new(),
         }
@@ -2705,12 +2708,21 @@ impl KakuAssistantConfig {
         &self.auth_type
     }
 
+    fn fast_model(&self) -> &str {
+        &self.fast_model
+    }
+
     fn web_search_provider(&self) -> &str {
         &self.web_search_provider
     }
 
     fn web_search_api_key(&self) -> &str {
         &self.web_search_api_key
+    }
+
+    fn with_fast_model(mut self, fast_model: impl Into<String>) -> Self {
+        self.fast_model = fast_model.into();
+        self
     }
 
     fn with_web_search(mut self, provider: impl Into<String>, api_key: impl Into<String>) -> Self {
@@ -2770,8 +2782,15 @@ fn parse_kaku_assistant_config(raw: &str) -> KakuAssistantConfig {
         .unwrap_or("")
         .to_string();
 
+    let fast_model = parsed
+        .get("fast_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
     let mut cfg = KakuAssistantConfig::new(enabled, api_key, model, base_url)
         .with_custom_headers(custom_headers)
+        .with_fast_model(fast_model)
         .with_web_search(web_search_provider, web_search_api_key);
     cfg.auth_type = stored_auth_type.to_string();
     cfg
@@ -2947,6 +2966,16 @@ fn extract_kaku_assistant_fields(raw: &str) -> Vec<FieldEntry> {
         FieldEntry {
             key: "Model".into(),
             value: cfg.model().to_string(),
+            options: model_options.clone(),
+            editable: true,
+        },
+        FieldEntry {
+            key: "Fast Model".into(),
+            value: if cfg.fast_model().is_empty() {
+                String::new()
+            } else {
+                cfg.fast_model().to_string()
+            },
             options: model_options,
             editable: true,
         },
@@ -3023,6 +3052,12 @@ fn write_kaku_assistant_config(path: &Path, cfg: &KakuAssistantConfig) -> anyhow
         "model = {}\n",
         render_toml_string(cfg.model().trim())
     ));
+    if !cfg.fast_model().trim().is_empty() {
+        out.push_str(&format!(
+            "fast_model = {}\n",
+            render_toml_string(cfg.fast_model().trim())
+        ));
+    }
     out.push_str(&format!(
         "base_url = {}\n",
         render_toml_string(cfg.base_url().trim())
@@ -3108,6 +3143,7 @@ fn save_kaku_assistant_field(field_key: &str, new_val: &str) -> anyhow::Result<(
             let enabled = matches!(new_val.trim(), "On" | "on" | "true" | "1");
             KakuAssistantConfig::new(enabled, cfg.api_key(), cfg.model(), cfg.base_url())
                 .with_custom_headers(cfg.custom_headers().to_vec())
+                .with_fast_model(cfg.fast_model())
                 .with_web_search(cfg.web_search_provider(), cfg.web_search_api_key())
         }
         "Model" => {
@@ -3118,6 +3154,14 @@ fn save_kaku_assistant_field(field_key: &str, new_val: &str) -> anyhow::Result<(
             };
             KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), model, cfg.base_url())
                 .with_custom_headers(cfg.custom_headers().to_vec())
+                .with_fast_model(cfg.fast_model())
+                .with_web_search(cfg.web_search_provider(), cfg.web_search_api_key())
+        }
+        "Fast Model" => {
+            let fm = new_val.trim();
+            KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), cfg.model(), cfg.base_url())
+                .with_custom_headers(cfg.custom_headers().to_vec())
+                .with_fast_model(fm)
                 .with_web_search(cfg.web_search_provider(), cfg.web_search_api_key())
         }
         "Base URL" => {
@@ -3128,6 +3172,7 @@ fn save_kaku_assistant_field(field_key: &str, new_val: &str) -> anyhow::Result<(
             };
             KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), cfg.model(), base_url)
                 .with_custom_headers(cfg.custom_headers().to_vec())
+                .with_fast_model(cfg.fast_model())
                 .with_web_search(cfg.web_search_provider(), cfg.web_search_api_key())
         }
         "API Key" => KakuAssistantConfig::new(
@@ -3137,6 +3182,7 @@ fn save_kaku_assistant_field(field_key: &str, new_val: &str) -> anyhow::Result<(
             cfg.base_url(),
         )
         .with_custom_headers(cfg.custom_headers().to_vec())
+        .with_fast_model(cfg.fast_model())
         .with_web_search(cfg.web_search_provider(), cfg.web_search_api_key()),
         "Web Search" => {
             const VALID: &[&str] = &["none", "brave", "pipellm", "tavily"];
@@ -3153,11 +3199,13 @@ fn save_kaku_assistant_field(field_key: &str, new_val: &str) -> anyhow::Result<(
             };
             KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), cfg.model(), cfg.base_url())
                 .with_custom_headers(cfg.custom_headers().to_vec())
+                .with_fast_model(cfg.fast_model())
                 .with_web_search(provider, key)
         }
         "Search Key" => {
             KakuAssistantConfig::new(cfg.is_enabled(), cfg.api_key(), cfg.model(), cfg.base_url())
                 .with_custom_headers(cfg.custom_headers().to_vec())
+                .with_fast_model(cfg.fast_model())
                 .with_web_search(cfg.web_search_provider(), new_val.trim())
         }
         _ => return Ok(()),
