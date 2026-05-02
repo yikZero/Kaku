@@ -1271,7 +1271,7 @@ _kaku_set_user_var() {
 
     local encoded=""
     if command -v base64 >/dev/null 2>&1; then
-        encoded="\$(printf '%s' "\$value" | base64 | tr -d '\r\n')"
+        encoded="\$(printf '%s' "\$value" | base64)"
     else
         return
     fi

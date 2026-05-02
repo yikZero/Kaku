@@ -108,6 +108,21 @@ const FACTORY_DROID_AUTONOMY_OPTIONS: [&str; 5] =
     ["normal", "spec", "auto-low", "auto-medium", "auto-high"];
 const USAGE_CACHE_TTL: Duration = Duration::from_secs(120);
 const ASSISTANT_MODELS_CACHE_TTL: Duration = Duration::from_secs(1800);
+const ASSISTANT_MODEL_FALLBACKS: &[&str] = &[
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex",
+    "gpt-5.2",
+    "gpt-5.1",
+    "gpt-5",
+    "o3",
+    "o4-mini",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+];
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const UI_STATUS_TTL: Duration = Duration::from_secs(3);
 const UI_ERROR_TTL: Duration = Duration::from_secs(5);
@@ -2952,9 +2967,54 @@ fn fetch_kaku_assistant_models(api_key: &str, base_url: &str) -> Vec<String> {
     models
 }
 
+fn normalize_assistant_model_options(
+    mut models: Vec<String>,
+    current_model: &str,
+    fast_model: &str,
+) -> Vec<String> {
+    models.retain(|m| !m.trim().is_empty());
+    models.sort();
+    models.dedup();
+
+    let mut ordered = Vec::new();
+
+    for preferred in [current_model.trim(), fast_model.trim()] {
+        if preferred.is_empty() || ordered.iter().any(|m| m == preferred) {
+            continue;
+        }
+        ordered.push(preferred.to_string());
+    }
+
+    for model in models {
+        if !ordered.iter().any(|m| m == &model) {
+            ordered.push(model);
+        }
+    }
+
+    ordered.truncate(50);
+    ordered
+}
+
+fn assistant_model_options_for_config(cfg: &KakuAssistantConfig) -> Vec<String> {
+    let mut models = fetch_kaku_assistant_models(cfg.api_key(), cfg.base_url());
+
+    if models.is_empty() {
+        models = ASSISTANT_MODEL_FALLBACKS
+            .iter()
+            .map(|m| (*m).to_string())
+            .collect();
+    }
+
+    normalize_assistant_model_options(models, cfg.model(), cfg.fast_model())
+}
+
 fn extract_kaku_assistant_fields(raw: &str) -> Vec<FieldEntry> {
     let cfg = parse_kaku_assistant_config(raw);
-    let model_options = fetch_kaku_assistant_models(cfg.api_key(), cfg.base_url());
+    let model_options = assistant_model_options_for_config(&cfg);
+    let mut fast_model_options = model_options.clone();
+    if !fast_model_options.iter().any(|m| m == "—") {
+        fast_model_options.insert(0, "—".into());
+    }
 
     let mut fields = vec![
         FieldEntry {
@@ -2976,7 +3036,7 @@ fn extract_kaku_assistant_fields(raw: &str) -> Vec<FieldEntry> {
             } else {
                 cfg.fast_model().to_string()
             },
-            options: model_options,
+            options: fast_model_options,
             editable: true,
         },
         FieldEntry {
@@ -5224,7 +5284,11 @@ fn save_kimi_field_at(path: &Path, field_key: &str, new_val: &str) -> anyhow::Re
     Ok(())
 }
 
-pub fn run() -> anyhow::Result<()> {
+pub fn run(
+    config_file: Option<std::ffi::OsString>,
+    config_override: Vec<(String, String)>,
+    skip_config: bool,
+) -> anyhow::Result<()> {
     struct TerminalGuard {
         raw_mode: bool,
         bracketed_paste: bool,
@@ -5278,6 +5342,9 @@ pub fn run() -> anyhow::Result<()> {
 
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
+        if let Err(e) = config::common_init(config_file.as_ref(), &config_override, skip_config) {
+            log::error!("config init failed: {:#}", e);
+        }
         tx.send(App::new()).ok();
     });
 
@@ -6565,13 +6632,51 @@ provider = "managed:kimi-code"
         // No Provider row.
         assert!(fields.iter().all(|f| f.key != "Provider"));
         // Fixed rows always present.
-        for key in &["Enabled", "Model", "Base URL", "API Key", "Web Search"] {
-            assert!(fields.iter().any(|f| f.key == *key), "missing field: {key}");
+        for key in &[
+            "Enabled",
+            "Model",
+            "Fast Model",
+            "Base URL",
+            "API Key",
+            "Web Search",
+        ] {
+            assert!(
+                fields.iter().any(|f| f.key == *key),
+                "missing field: {}",
+                key
+            );
         }
         let model = fields.iter().find(|f| f.key == "Model").unwrap();
         assert_eq!(model.value, "gpt-5.4-mini");
+        let fast_model = fields.iter().find(|f| f.key == "Fast Model").unwrap();
+        assert_eq!(fast_model.value, "—");
+        assert!(
+            fast_model.options.iter().any(|opt| opt == "—"),
+            "Fast Model selector must provide a clear option"
+        );
+        assert!(
+            fast_model.options.iter().any(|opt| opt == "gpt-5.4-mini"),
+            "Fast Model options should contain the current Model value"
+        );
         let api_key = fields.iter().find(|f| f.key == "API Key").unwrap();
         assert_ne!(api_key.value, "—");
+    }
+
+    #[test]
+    fn normalize_assistant_model_options_keeps_current_and_fast_first() {
+        let models = normalize_assistant_model_options(
+            vec![
+                "gpt-5.4-mini".into(),
+                "gpt-5.5".into(),
+                "gpt-5.5".into(),
+                String::new(),
+            ],
+            "gpt-5.5",
+            "gpt-5.2",
+        );
+        assert_eq!(models.first().map(String::as_str), Some("gpt-5.5"));
+        assert_eq!(models.get(1).map(String::as_str), Some("gpt-5.2"));
+        assert!(models.iter().any(|m| m == "gpt-5.4-mini"));
     }
 
     #[test]

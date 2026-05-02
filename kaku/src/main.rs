@@ -351,16 +351,20 @@ fn run() -> anyhow::Result<()> {
             Ok(())
         }
         SubCommand::Update(cmd) => cmd.run(),
-        // Skip init_config: config TUI reads the file via std::fs directly and does
-        // not depend on the wezterm CONFIG global; full Lua reload is the slow path.
-        SubCommand::Config(cmd) => cmd.run(opts.config_file.as_ref().map(PathBuf::from)),
+        SubCommand::Config(cmd) => cmd.run(
+            opts.config_file.as_ref().map(PathBuf::from),
+            opts.config_file.clone(),
+            opts.config_override.clone(),
+            opts.skip_config,
+        ),
         SubCommand::Init(cmd) => cmd.run(),
         SubCommand::Doctor(cmd) => cmd.run(),
         SubCommand::Reset(cmd) => cmd.run(),
-        SubCommand::Ai(cmd) => {
-            init_config(&opts)?;
-            cmd.run()
-        }
+        SubCommand::Ai(cmd) => cmd.run(
+            opts.config_file.clone(),
+            opts.config_override.clone(),
+            opts.skip_config,
+        ),
     }
 }
 

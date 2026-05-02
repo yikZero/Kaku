@@ -542,33 +542,41 @@ function __wezterm_semantic_preexec() {
   __wezterm_semantic_precmd_executing=1
 }
 
-__wezterm_user_vars_precmd() {
-  __wezterm_set_user_var "WEZTERM_PROG" ""
-  __wezterm_set_user_var "WEZTERM_USER" "$(id -un)"
-
-  # Indicate whether this pane is running inside tmux or not
-  if [[ -n "${TMUX-}" ]] ; then
-    __wezterm_set_user_var "WEZTERM_IN_TMUX" "1"
+# Cache static user vars at shell init (avoids subprocesses on each prompt)
+if hash base64 2>/dev/null ; then
+  __wezterm_cached_user_b64="$(printf '%s' "${USER:-$(id -un)}" | base64)"
+  if [[ -z "${WEZTERM_HOSTNAME-}" ]]; then
+    if [[ -r /proc/sys/kernel/hostname ]]; then
+      __wezterm_cached_host_b64="$(cat /proc/sys/kernel/hostname | base64)"
+    elif hash hostname 2>/dev/null; then
+      __wezterm_cached_host_b64="$(printf '%s' "$(hostname)" | base64)"
+    elif hash hostnamectl 2>/dev/null; then
+      __wezterm_cached_host_b64="$(printf '%s' "$(hostnamectl hostname)" | base64)"
+    else
+      __wezterm_cached_host_b64="$(printf '%s' "unknown" | base64)"
+    fi
   else
-    __wezterm_set_user_var "WEZTERM_IN_TMUX" "0"
+    __wezterm_cached_host_b64="$(printf '%s' "${WEZTERM_HOSTNAME}" | base64)"
   fi
-
-  # You may set WEZTERM_HOSTNAME to a name you want to use instead
-  # of calling out to the hostname executable on every prompt print.
-if [[ -z "${WEZTERM_HOSTNAME}" ]]; then
-  if [[ -r /proc/sys/kernel/hostname ]]; then
-    __wezterm_set_user_var "WEZTERM_HOST" "$(cat /proc/sys/kernel/hostname)"
-  elif hash hostname 2>/dev/null; then
-    __wezterm_set_user_var "WEZTERM_HOST" "$(hostname)"
-  elif hash hostnamectl 2>/dev/null; then
-    __wezterm_set_user_var "WEZTERM_HOST" "$(hostnamectl hostname)"
+  if [[ -n "${TMUX-}" ]]; then
+    __wezterm_cached_tmux_b64="$(printf '%s' "1" | base64)"
   else
-    __wezterm_set_user_var "WEZTERM_HOST" "unknown"
+    __wezterm_cached_tmux_b64="$(printf '%s' "0" | base64)"
   fi
-else
-  __wezterm_set_user_var "WEZTERM_HOST" "${WEZTERM_HOSTNAME}"
 fi
 
+__wezterm_user_vars_precmd() {
+  if [[ -z "${TMUX-}" ]] ; then
+    printf "\033]1337;SetUserVar=%s=%s\007" "WEZTERM_PROG" ""
+    printf "\033]1337;SetUserVar=%s=%s\007" "WEZTERM_USER" "$__wezterm_cached_user_b64"
+    printf "\033]1337;SetUserVar=%s=%s\007" "WEZTERM_IN_TMUX" "$__wezterm_cached_tmux_b64"
+    printf "\033]1337;SetUserVar=%s=%s\007" "WEZTERM_HOST" "$__wezterm_cached_host_b64"
+  else
+    printf "\033Ptmux;\033\033]1337;SetUserVar=%s=%s\007\033\\" "WEZTERM_PROG" ""
+    printf "\033Ptmux;\033\033]1337;SetUserVar=%s=%s\007\033\\" "WEZTERM_USER" "$__wezterm_cached_user_b64"
+    printf "\033Ptmux;\033\033]1337;SetUserVar=%s=%s\007\033\\" "WEZTERM_IN_TMUX" "$__wezterm_cached_tmux_b64"
+    printf "\033Ptmux;\033\033]1337;SetUserVar=%s=%s\007\033\\" "WEZTERM_HOST" "$__wezterm_cached_host_b64"
+  fi
 }
 
 __wezterm_user_vars_preexec() {

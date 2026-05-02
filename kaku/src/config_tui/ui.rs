@@ -100,9 +100,9 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
         return;
     }
 
-    // Keep one column on the right to avoid edge-wrap artifacts, while using
-    // full height so the footer can stick to the bottom.
-    let area = Rect::new(full.x, full.y, full.width - 1, full.height);
+    // Use the full frame so background and popup layers stay visually consistent
+    // with the active theme across the whole terminal width.
+    let area = full;
 
     frame.render_widget(Clear, area);
     frame.render_widget(Block::default().style(Style::default().bg(bg())), area);

@@ -19,9 +19,9 @@ pub(super) fn ui(frame: &mut ratatui::Frame, app: &mut App) {
     if full.width < 2 || full.height < 2 {
         return;
     }
-    // Keep one column on the right to avoid edge-wrap artifacts, while using
-    // full height so the status bar can stick to the bottom.
-    let area = Rect::new(full.x, full.y, full.width - 1, full.height);
+    // Use the full frame so background and popup layers stay visually consistent
+    // with the active theme across the whole terminal width.
+    let area = full;
 
     // Clear frame content first to avoid stale glyph artifacts when redrawing
     // in non-alternate-screen mode.

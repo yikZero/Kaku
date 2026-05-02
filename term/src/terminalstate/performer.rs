@@ -913,9 +913,12 @@ impl<'a> Performer<'a> {
                 }
                 ITermProprietary::File(image) => self.set_image(*image),
                 ITermProprietary::SetUserVar { name, value } => {
+                    let changed = self.user_vars.get(&name) != Some(&value);
                     self.user_vars.insert(name.clone(), value.clone());
-                    if let Some(handler) = self.alert_handler.as_mut() {
-                        handler.alert(Alert::SetUserVar { name, value });
+                    if changed {
+                        if let Some(handler) = self.alert_handler.as_mut() {
+                            handler.alert(Alert::SetUserVar { name, value });
+                        }
                     }
                 }
                 ITermProprietary::UnicodeVersion(ITermUnicodeVersionOp::Set(n)) => {

@@ -13,6 +13,7 @@ use ratatui::Terminal;
 use std::convert::TryFrom;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const KAKU_AUTO_COLOR_SCHEME_EXPR: &str = "(wezterm.gui and wezterm.gui.get_appearance() or 'Dark'):find('Dark') and 'Kaku Dark' or 'Kaku Light'";
 
@@ -27,7 +28,12 @@ enum NormalModeAction {
     Noop,
 }
 
-pub fn run(config_path: PathBuf) -> anyhow::Result<()> {
+pub fn run(
+    config_path: PathBuf,
+    config_file: Option<std::ffi::OsString>,
+    config_override: Vec<(String, String)>,
+    skip_config: bool,
+) -> anyhow::Result<()> {
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
     stdout
@@ -40,16 +46,26 @@ pub fn run(config_path: PathBuf) -> anyhow::Result<()> {
         .draw(|f| crate::tui_splash::render_splash(f, "Loading..."))
         .ok();
 
+    if let Err(e) = config::common_init(config_file.as_ref(), &config_override, skip_config) {
+        log::error!("config init failed: {:#}", e);
+    }
+
     let mut app = App::new(config_path);
     app.load_config();
 
     let result = run_app(&mut terminal, &mut app);
+    let saved = app.has_saved;
+    let path = app.config_path().display().to_string();
 
     disable_raw_mode().context("disable raw mode")?;
     terminal
         .backend_mut()
         .execute(LeaveAlternateScreen)
         .context("leave alternate screen")?;
+
+    if saved {
+        println!("Config saved to {}", path);
+    }
 
     result
 }
@@ -75,42 +91,21 @@ fn run_app(
 
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             app.finalize_active_input();
-            if app.dirty {
-                terminal
-                    .draw(|f| crate::tui_splash::render_splash(f, "Saving..."))
-                    .ok();
-            }
-            if let Err(e) = app.save_if_dirty() {
-                return Err(e);
-            }
+            save_with_feedback(terminal, app)?;
             return Ok(());
         }
 
         match app.mode {
             Mode::Normal => match normal_mode_action(key.code) {
                 NormalModeAction::ExitAndSave => {
-                    if app.dirty {
-                        terminal
-                            .draw(|f| crate::tui_splash::render_splash(f, "Saving..."))
-                            .ok();
-                    }
-                    if let Err(e) = app.save_if_dirty() {
-                        return Err(e);
-                    }
+                    save_with_feedback(terminal, app)?;
                     return Ok(());
                 }
                 NormalModeAction::ExitDiscard => {
                     return Ok(());
                 }
                 NormalModeAction::OpenEditor => {
-                    if app.dirty {
-                        terminal
-                            .draw(|f| crate::tui_splash::render_splash(f, "Saving..."))
-                            .ok();
-                    }
-                    if let Err(e) = app.save_if_dirty() {
-                        return Err(e);
-                    }
+                    save_with_feedback(terminal, app)?;
                     let config_path = app.config_path();
                     if let Err(e) =
                         with_terminal_suspended(terminal, || open_config_in_editor(&config_path))
@@ -161,14 +156,7 @@ fn run_app(
                     // ESC in selector = confirm the highlighted option and exit,
                     // matching the "ESC saves and exits" mental model of Normal mode.
                     app.confirm_select();
-                    if app.dirty {
-                        terminal
-                            .draw(|f| crate::tui_splash::render_splash(f, "Saving..."))
-                            .ok();
-                    }
-                    if let Err(e) = app.save_if_dirty() {
-                        return Err(e);
-                    }
+                    save_with_feedback(terminal, app)?;
                     return Ok(());
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -184,6 +172,28 @@ fn run_app(
             },
         }
     }
+}
+
+fn save_with_feedback(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+) -> anyhow::Result<()> {
+    if !app.dirty {
+        return Ok(());
+    }
+
+    terminal
+        .draw(|f| crate::tui_splash::render_splash_with_spinner(f, "Saving...", '◐'))
+        .ok();
+
+    app.save_if_dirty()?;
+
+    terminal
+        .draw(|f| crate::tui_splash::render_splash_with_spinner(f, "Saved", '✓'))
+        .ok();
+    std::thread::sleep(Duration::from_millis(500));
+
+    Ok(())
 }
 
 fn normal_mode_action(key: KeyCode) -> NormalModeAction {
